@@ -208,6 +208,7 @@ class YouTubeAutomationAgent {
         status: 'healthy',
         initialized: this.isInitialized,
         agents: Object.keys(this.agents),
+        uptime: process.uptime(),
         timestamp: new Date().toISOString()
       });
     });

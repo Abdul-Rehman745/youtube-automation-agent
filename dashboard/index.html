@@ -285,7 +285,7 @@
             overview.innerHTML = `
                 <p><strong>Status:</strong> ${data.initialized ? 'Initialized' : 'Initializing'}</p>
                 <p><strong>Agents Active:</strong> ${data.agents ? data.agents.length : 0}/7</p>
-                <p><strong>Uptime:</strong> ${formatUptime(process?.uptime?.() || 0)}</p>
+                <p><strong>Uptime:</strong> ${formatUptime(data.uptime || 0)}</p>
                 <p><strong>Last Updated:</strong> ${new Date().toLocaleTimeString()}</p>
             `;
             
@@ -372,20 +372,56 @@
             return `${hours}h ${minutes}m`;
         }
         
-        async function generateContent() {
-            if (confirm('Generate content now? This will create a new video for your channel.')) {
-                try {
-                    const response = await fetch('/generate', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ topic: null, style: 'story' })
-                    });
-                    const result = await response.json();
-                    alert(`Content generation started! Title: ${result.result?.title || 'New Content'}`);
-                    refreshDashboard();
-                } catch (error) {
-                    alert('Content generation failed. Please try again.');
+        // API key handling for protected endpoints (API_KEY in .env)
+        function getStoredApiKey() {
+            return localStorage.getItem('yaa_api_key') || '';
+        }
+
+        function promptForApiKey() {
+            const key = prompt('This server requires an API key (the API_KEY value from your .env):', getStoredApiKey());
+            if (key === null) return null; // user cancelled
+            localStorage.setItem('yaa_api_key', key.trim());
+            return key.trim();
+        }
+
+        async function postWithApiKey(url, body) {
+            const doFetch = (key) => fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(key ? { 'x-api-key': key } : {})
+                },
+                body: JSON.stringify(body)
+            });
+
+            let response = await doFetch(getStoredApiKey());
+            if (response.status === 401) {
+                const key = promptForApiKey();
+                if (key !== null) {
+                    response = await doFetch(key);
                 }
+            }
+            return response;
+        }
+
+        async function generateContent() {
+            if (!confirm('Generate content now? This will create a new video for your channel.')) {
+                return;
+            }
+
+            try {
+                const response = await postWithApiKey('/generate', { topic: null, style: 'story' });
+                const result = await response.json().catch(() => ({}));
+
+                if (!response.ok) {
+                    alert(`Content generation failed: ${result.error || response.statusText}`);
+                    return;
+                }
+
+                alert(`Content generation started! Title: ${result.result?.title || 'New Content'}`);
+                refreshDashboard();
+            } catch (error) {
+                alert('Content generation failed. Please try again.');
             }
         }
         
