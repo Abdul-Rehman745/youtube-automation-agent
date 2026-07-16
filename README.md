@@ -1,5 +1,17 @@
 # YouTube Automation Agent
 
+## What's New in v2.2
+
+This release resolves every open GitHub issue (#1, #2, #3, #4, #8, #9, #13):
+
+- **Gemini (and every other provider) now passes credential validation** — startup and setup no longer demand an OpenAI key. Any one configured AI provider (OpenAI, Gemini, OpenRouter, Kimi, MiMo, or GLM) is enough. (#3, #9)
+- **FFmpeg is bundled** — `npm install` now pulls a prebuilt FFmpeg binary via `ffmpeg-static`, so `'ffmpeg' is not recognized` is gone. A system install on your PATH or `FFMPEG_PATH` in `.env` still takes precedence. (#1)
+- **Generated content actually reaches the publish queue** — the `/generate` pipeline previously produced a video and then never scheduled it, so "Processing publish queue" ran forever with nothing to do. It now queues every successful production. (#2)
+- **Real .mp4 output without paid keys** — if TTS isn't configured, the slideshow renders as a silent video instead of dying on a placeholder file. Placeholder `.info` assets are filtered out of slides. (#4)
+- **No more silent failures** — a capability check at startup shows exactly which pipeline stages will run for real (✓) vs. what's missing and how to fix it (✗). Productions that only produced placeholders are marked `simulated`, are never scheduled for upload, and log a loud warning. (#4, #8, #13)
+- **Setup wizard no longer hard-aborts** — missing credentials or FFmpeg produce warnings with fix instructions instead of `❌ Setup failed!`. (#9)
+- **Publish-queue logging is informative** — shows how many items are waiting and when the next publish happens, instead of an identical line every 15 minutes. (#2)
+
 ## What's New in v2.1
 
 - **Real AI generation wired in** — the Content Strategy, Script Writer, and SEO agents now call your configured AI provider (OpenAI, OpenRouter, Kimi, MiMo, GLM, or Gemini) for topics, scripts, titles, descriptions, and tags. If no provider key is set, they fall back to the built-in templates so the pipeline still runs.
@@ -106,9 +118,10 @@ Dashboard runs at `http://localhost:3456`.
 ### Prerequisites
 
 - Node.js 18+
-- [FFmpeg](https://ffmpeg.org/download.html) on your PATH (used for video assembly and audio muxing)
+- FFmpeg — bundled automatically via `ffmpeg-static` on `npm install`; a system install on your PATH or an `FFMPEG_PATH` env var takes precedence
 - Google account (YouTube Data API — free)
-- At least one AI provider key (OpenAI or Gemini) — without one, agents fall back to template-based generation
+- At least one AI provider key (OpenAI, Gemini, OpenRouter, Kimi, MiMo, or GLM) — without one, agents fall back to template-based generation
+- Optional: an OpenAI key for image generation and a TTS provider (OpenAI / ElevenLabs / Azure) for narration — without them you get gradient slides and silent video
 
 ## Configuration
 
@@ -300,6 +313,10 @@ youtube-automation-agent/
 
 | Problem | Fix |
 |---------|-----|
+| `Missing credentials for: an AI provider` | Configure any one provider with `npm run credentials:setup` — OpenAI is not required |
+| `'ffmpeg' is not recognized` / no .mp4 produced | Run `npm install` (fetches the bundled binary), or install FFmpeg and set `FFMPEG_PATH` |
+| Video marked `simulated`, nothing uploads | Check the ✗ lines in the startup capability check — a key or FFmpeg is missing |
+| "Processing publish queue" but nothing publishes | The queue log now shows what's waiting; content publishes at its scheduled time (default: next day 2 PM) |
 | YouTube API quota exceeded | Check quotas in Google Cloud Console; reduce posting frequency |
 | Content generation failed | Verify API keys and credits; check `logs/` |
 | Publishing failed | Re-authenticate YouTube OAuth tokens; check video format |

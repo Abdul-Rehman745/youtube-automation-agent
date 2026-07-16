@@ -99,14 +99,20 @@ class ProductionManagementAgent {
       
       // Final assembly
       await this.assembleVideo(productionData);
-      
-      // Mark as ready
-      productionData.status = 'ready';
-      productionData.timeline.readyForUpload = new Date().toISOString();
-      
+
+      // Mark as ready — or simulated, when no real video could be produced
+      const simulated = Boolean(productionData.assets.finalVideo?.simulated);
+      if (simulated) {
+        productionData.status = 'simulated';
+        this.logger.warn(`Content ${productionId} produced PLACEHOLDER assets only — it will NOT be uploaded. Check your AI provider keys and FFmpeg installation.`);
+      } else {
+        productionData.status = 'ready';
+        productionData.timeline.readyForUpload = new Date().toISOString();
+      }
+
       await this.db.updateProductionData(productionData);
-      
-      this.logger.info(`Content processing complete: ${productionId}`);
+
+      this.logger.info(`Content processing complete: ${productionId} (status: ${productionData.status})`);
       return productionData;
     } catch (error) {
       this.logger.error('Failed to process content:', error);
@@ -548,15 +554,20 @@ class ProductionManagementAgent {
     
     try {
       const finalVideoPath = path.join(__dirname, '..', 'data', 'videos', `${productionData.id}_final.mp4`);
-      
+
       // Use AI Video Generator to create the final video
-      await this.aiVideoGenerator.generateVideo(
+      const producedPath = await this.aiVideoGenerator.generateVideo(
         productionData.script,
         productionData.assets.video.visualAssets || [],
         productionData.assets.audio.path,
         finalVideoPath
       );
-      
+
+      // The generator falls back to a placeholder .info file when it cannot render
+      if (!producedPath || path.extname(producedPath).toLowerCase() !== '.mp4') {
+        return await this.simulateVideoAssembly(productionData);
+      }
+
       // Get file stats
       const stats = await fs.stat(finalVideoPath);
       

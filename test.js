@@ -20,6 +20,9 @@ class SystemTest {
       { name: 'Automation Events Table', test: () => this.testAutomationEventsTable() },
       { name: 'API Validation and Security', test: () => this.testAPIValidationAndSecurity() },
       { name: 'Publishing Safety', test: () => this.testPublishingSafety() },
+      { name: 'Multi-Provider Credential Validation', test: () => this.testCredentialValidation() },
+      { name: 'Placeholder Scheduling Guard', test: () => this.testPlaceholderSchedulingGuard() },
+      { name: 'FFmpeg Resolution', test: () => this.testFFmpegResolution() },
       { name: 'Logger System', test: () => this.testLogger() },
       { name: 'Directory Structure', test: () => this.testDirectories() },
       { name: 'Agent Loading', test: () => this.testAgentLoading() },
@@ -248,6 +251,113 @@ class SystemTest {
 
     this.logger.info('Publishing safety test completed successfully');
   }
+
+  async testCredentialValidation() {
+    const { PROVIDERS } = require('./utils/ai-text-service');
+    const manager = new CredentialManager();
+
+    // Isolate the test from any API keys set in the environment
+    const envKeys = [...Object.values(PROVIDERS).map(p => p.envKey), 'GEMINI_API_KEY'];
+    const savedEnv = {};
+    for (const key of envKeys) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+
+    try {
+      manager.credentials = { youtube: { client_id: 'x' }, gemini: { apiKey: 'gm-test' } };
+      if (manager.getMissingCredentials().length !== 0) {
+        throw new Error('Gemini-only configuration was incorrectly reported as missing credentials');
+      }
+
+      manager.credentials = { youtube: { client_id: 'x' }, aiProvider: { provider: 'openrouter', apiKey: 'sk-or-test' } };
+      if (manager.getMissingCredentials().length !== 0) {
+        throw new Error('OpenRouter configuration was incorrectly reported as missing credentials');
+      }
+
+      manager.credentials = { youtube: { client_id: 'x' } };
+      const missingProvider = manager.getMissingCredentials();
+      if (missingProvider.length !== 1 || !/AI provider/.test(missingProvider[0])) {
+        throw new Error('Missing AI provider was not detected');
+      }
+
+      manager.credentials = { openai: { apiKey: 'sk-test' } };
+      const missingYouTube = manager.getMissingCredentials();
+      if (missingYouTube.length !== 1 || missingYouTube[0] !== 'youtube') {
+        throw new Error('Missing YouTube credentials were not detected');
+      }
+    } finally {
+      for (const key of envKeys) {
+        if (savedEnv[key] === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = savedEnv[key];
+        }
+      }
+    }
+
+    this.logger.info('Credential validation test completed successfully');
+  }
+
+  async testPlaceholderSchedulingGuard() {
+    const { PublishingSchedulingAgent } = require('./agents/publishing-scheduling-agent');
+    const agent = new PublishingSchedulingAgent({
+      saveScheduleEntry: async () => {}
+    }, {});
+
+    const simulated = await agent.scheduleContent({
+      id: 'prod-simulated',
+      script: { title: 'Simulated' },
+      assets: { finalVideo: { path: 'video.mp4.assembly.json', simulated: true } }
+    });
+    if (simulated !== null) {
+      throw new Error('Simulated production was scheduled for publishing');
+    }
+
+    const missingVideo = await agent.scheduleContent({
+      id: 'prod-missing',
+      script: { title: 'Missing' },
+      assets: {}
+    });
+    if (missingVideo !== null) {
+      throw new Error('Production without a final video was scheduled for publishing');
+    }
+
+    const real = await agent.scheduleContent({
+      id: 'prod-real',
+      script: { title: 'Real' },
+      priority: 50,
+      scheduledPublishTime: new Date().toISOString(),
+      assets: { finalVideo: { path: 'video.mp4' }, thumbnail: {}, captions: {} },
+      seo: {}
+    });
+    if (!real || agent.publishQueue.length !== 1) {
+      throw new Error('Real production was not scheduled for publishing');
+    }
+
+    this.logger.info('Placeholder scheduling guard test completed successfully');
+  }
+
+  async testFFmpegResolution() {
+    const { getFFmpegPath, checkFFmpeg, ffmpegInstallHint } = require('./utils/ffmpeg');
+
+    const ffmpegPath = getFFmpegPath();
+    if (typeof ffmpegPath !== 'string' || ffmpegPath.length === 0) {
+      throw new Error('getFFmpegPath did not return a usable path');
+    }
+
+    const available = await checkFFmpeg();
+    if (typeof available !== 'boolean') {
+      throw new Error('checkFFmpeg did not return a boolean');
+    }
+
+    if (!/FFmpeg/i.test(ffmpegInstallHint())) {
+      throw new Error('ffmpegInstallHint did not return install guidance');
+    }
+
+    this.logger.info(`FFmpeg resolution test completed (binary: ${ffmpegPath}, available: ${available})`);
+  }
+
   async testLogger() {
     const testLogger = new Logger('TestLogger');
     

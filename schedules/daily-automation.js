@@ -125,9 +125,13 @@ class DailyAutomation {
       });
       this.logger.info(`Production completed: ${productionData.id}`);
 
-      // Schedule for publishing
-      await this.agents.publishing.scheduleContent(productionData);
-      this.logger.info('Content scheduled for publishing');
+      // Schedule for publishing (returns null when only placeholder assets were produced)
+      const scheduleEntry = await this.agents.publishing.scheduleContent(productionData);
+      if (scheduleEntry) {
+        this.logger.info('Content scheduled for publishing');
+      } else {
+        this.logger.warn('Content was NOT scheduled — production produced placeholder assets. See warnings above.');
+      }
 
       timer.end();
       this.logger.success('Daily content generation completed successfully');

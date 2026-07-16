@@ -219,12 +219,13 @@ node index.js`;
 
   async validateSetup() {
     console.log(chalk.cyan('\n🔍 Validating setup...'));
-    
+
     const validation = {
       directories: true,
       database: false,
       credentials: false,
-      environment: false
+      environment: false,
+      ffmpeg: false
     };
 
     // Check directories
@@ -255,6 +256,10 @@ node index.js`;
       validation.environment = false;
     }
 
+    // Check FFmpeg (needed for video assembly)
+    const { checkFFmpeg, ffmpegInstallHint } = require('./utils/ffmpeg');
+    validation.ffmpeg = await checkFFmpeg();
+
     // Display validation results
     Object.entries(validation).forEach(([component, valid]) => {
       const icon = valid ? '✅' : '❌';
@@ -262,13 +267,24 @@ node index.js`;
       console.log(color(`  ${icon} ${component}`));
     });
 
-    const allValid = Object.values(validation).every(Boolean);
-    
-    if (!allValid) {
+    // Only broken infrastructure is fatal — missing credentials/FFmpeg can be fixed later
+    if (!validation.directories || !validation.database || !validation.environment) {
       throw new Error('Setup validation failed. Please check the errors above.');
     }
 
-    console.log(chalk.green('✅ All validations passed'));
+    if (!validation.credentials) {
+      console.log(chalk.yellow('\n⚠️  Credentials are incomplete. Finish them any time with: npm run credentials:setup'));
+    }
+
+    if (!validation.ffmpeg) {
+      console.log(chalk.yellow(`\n⚠️  ${ffmpegInstallHint()}`));
+    }
+
+    if (validation.credentials && validation.ffmpeg) {
+      console.log(chalk.green('✅ All validations passed'));
+    } else {
+      console.log(chalk.yellow('✅ Core setup complete (with warnings above)'));
+    }
   }
 
   async createSampleContent() {

@@ -43,8 +43,14 @@ class PublishingSchedulingAgent {
 
   async scheduleContent(productionData) {
     try {
+      const finalVideo = productionData.assets?.finalVideo;
+      if (!finalVideo || finalVideo.simulated || path.extname(finalVideo.path || '').toLowerCase() !== '.mp4') {
+        this.logger.warn(`Not scheduling ${productionData.id}: no real video file was produced (placeholder/simulated output). Fix your AI provider keys and FFmpeg, then regenerate.`);
+        return null;
+      }
+
       this.logger.info(`Scheduling content: ${productionData.id}`);
-      
+
       const scheduleEntry = {
         productionId: productionData.id,
         title: productionData.script.title,
@@ -207,14 +213,23 @@ class PublishingSchedulingAgent {
   }
 
   async processPublishQueue() {
-    this.logger.info('Processing publish queue...');
-    
     const now = new Date();
-    const readyToPublish = this.publishQueue.filter(entry => {
-      const publishTime = new Date(entry.publishTime);
-      return publishTime <= now && entry.status === 'scheduled';
-    });
-    
+    const scheduled = this.publishQueue
+      .filter(entry => entry.status === 'scheduled')
+      .sort((a, b) => new Date(a.publishTime) - new Date(b.publishTime));
+    const readyToPublish = scheduled.filter(entry => new Date(entry.publishTime) <= now);
+
+    if (readyToPublish.length === 0) {
+      if (scheduled.length > 0) {
+        this.logger.info(`Publish queue: ${scheduled.length} item(s) waiting, next publish at ${scheduled[0].publishTime}`);
+      } else {
+        this.logger.info('Publish queue is empty — nothing scheduled yet.');
+      }
+      return 0;
+    }
+
+    this.logger.info(`Processing publish queue: ${readyToPublish.length} item(s) ready to publish...`);
+
     for (const entry of readyToPublish) {
       try {
         await this.publishContent(entry.productionId);

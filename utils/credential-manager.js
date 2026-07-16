@@ -518,6 +518,31 @@ class CredentialManager {
     process.env[key] = String(value);
   }
   // Validation methods
+  hasAITextProvider() {
+    if (this.credentials.openai?.apiKey || this.credentials.gemini?.apiKey || this.credentials.aiProvider?.apiKey) {
+      return true;
+    }
+
+    // Environment-variable based configuration (see utils/ai-text-service.js)
+    const { PROVIDERS } = require('./ai-text-service');
+    const envKeys = [...Object.values(PROVIDERS).map(p => p.envKey), 'GEMINI_API_KEY'];
+    return envKeys.some(key => process.env[key]);
+  }
+
+  getMissingCredentials() {
+    const missing = [];
+
+    if (!this.credentials.youtube) {
+      missing.push('youtube');
+    }
+
+    if (!this.hasAITextProvider()) {
+      missing.push('an AI provider (OpenAI, Gemini, OpenRouter, Kimi, MiMo, or GLM)');
+    }
+
+    return missing;
+  }
+
   async validateAll() {
     try {
       await this.loadCredentials();
@@ -526,17 +551,11 @@ class CredentialManager {
       // Files might not exist yet
     }
 
-    const requiredCredentials = ['youtube', 'openai'];
-    const missing = [];
-
-    for (const service of requiredCredentials) {
-      if (!this.credentials[service]) {
-        missing.push(service);
-      }
-    }
+    const missing = this.getMissingCredentials();
 
     if (missing.length > 0) {
       console.log(chalk.yellow(`\n⚠️  Missing credentials for: ${missing.join(', ')}`));
+      console.log(chalk.gray('Any one AI provider is enough — run: npm run credentials:setup'));
       return false;
     }
 

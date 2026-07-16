@@ -1,6 +1,6 @@
 {
   "name": "youtube-automation-agent",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Fully automated YouTube channel management system with specialized AI agents",
   "main": "index.js",
   "scripts": {
@@ -37,6 +37,9 @@
     "sqlite3": "^5.1.6",
     "winston": "^3.11.0",
     "sharp": "^0.33.0"
+  },
+  "optionalDependencies": {
+    "ffmpeg-static": "^5.2.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.2",

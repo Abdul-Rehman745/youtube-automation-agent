@@ -47,6 +47,9 @@ class YouTubeAutomationAgent {
       // Initialize agents
       this.logger.info('Initializing agents...');
       await this.initializeAgents();
+
+      // Show which pipeline stages will run for real vs. be simulated
+      await this.logCapabilitySummary();
       
       // Setup API endpoints
       this.setupAPI();
@@ -82,6 +85,43 @@ class YouTubeAutomationAgent {
       await agent.initialize();
       this.logger.info(`✓ ${name} agent initialized`);
     }
+  }
+
+  async logCapabilitySummary() {
+    const { checkFFmpeg, ffmpegInstallHint } = require('./utils/ffmpeg');
+    const creds = this.credentials.credentials || {};
+
+    const hasText = this.credentials.hasAITextProvider();
+    const hasImages = Boolean(creds.openai?.apiKey || process.env.OPENAI_API_KEY);
+    const hasTTS = Boolean(
+      creds.openai?.apiKey || process.env.OPENAI_API_KEY ||
+      creds.elevenLabs?.apiKey || process.env.ELEVENLABS_API_KEY ||
+      creds.azureSpeech?.subscriptionKey || process.env.AZURE_SPEECH_KEY
+    );
+    const hasFFmpeg = await checkFFmpeg();
+    const hasUpload = Boolean(creds.youtube && this.credentials.tokens?.youtube);
+
+    const capabilities = [
+      { name: 'Script & strategy generation', ok: hasText, hint: 'configure an AI provider (npm run credentials:setup)' },
+      { name: 'Image generation (visuals/thumbnails)', ok: hasImages, hint: 'requires an OpenAI API key — otherwise gradient slides are used' },
+      { name: 'Voice narration (TTS)', ok: hasTTS, hint: 'configure OpenAI, ElevenLabs, or Azure Speech — otherwise videos are silent' },
+      { name: 'Video assembly (FFmpeg)', ok: hasFFmpeg, hint: ffmpegInstallHint() },
+      { name: 'YouTube upload', ok: hasUpload, hint: 'run: npm run credentials:setup' }
+    ];
+
+    console.log(chalk.cyan('\n🔎 Capability check:'));
+    for (const cap of capabilities) {
+      if (cap.ok) {
+        console.log(chalk.green(`  ✓ ${cap.name}`));
+      } else {
+        console.log(chalk.yellow(`  ✗ ${cap.name} — ${cap.hint}`));
+      }
+    }
+
+    if (!hasFFmpeg) {
+      this.logger.warn('FFmpeg is missing: no .mp4 files can be produced until it is installed.');
+    }
+    console.log('');
   }
 
   requireAPIKey() {
@@ -247,15 +287,22 @@ class YouTubeAutomationAgent {
       seo: seoData
     });
     this.logger.info('Production processing complete');
-    
+
     // Step 6: Save to database
     const contentId = await this.db.saveProductionData(productionData);
     this.logger.info(`Content saved with ID: ${contentId}`);
-    
+
+    // Step 7: Add to the publish queue (skipped automatically for simulated output)
+    const scheduleEntry = await this.agents.publishing.scheduleContent(productionData);
+    if (scheduleEntry) {
+      this.logger.info(`Content queued for publishing at ${scheduleEntry.publishTime}`);
+    }
+
     return {
       contentId,
       title: script.title,
-      scheduledFor: productionData.scheduledPublishTime
+      status: productionData.status,
+      scheduledFor: scheduleEntry ? scheduleEntry.publishTime : null
     };
   }
 

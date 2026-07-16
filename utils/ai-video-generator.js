@@ -1,13 +1,11 @@
 const OpenAI = require('openai');
 const Replicate = require('replicate');
-const { exec } = require('child_process');
-const { promisify } = require('util');
 const fs = require('fs').promises;
 const path = require('path');
+const { pathToFileURL } = require('url');
 const axios = require('axios');
 const { Logger } = require('./logger');
-
-const execAsync = promisify(exec);
+const { runFFmpeg, checkFFmpeg, ffmpegInstallHint } = require('./ffmpeg');
 
 class AIVideoGenerator {
   constructor(credentials) {
@@ -225,13 +223,18 @@ class AIVideoGenerator {
 
   async generateSlideshowVideo(script, visualAssets, audioPath, outputPath) {
     this.logger.info('Creating slideshow video...');
-    
+
+    if (!(await checkFFmpeg())) {
+      throw new Error(ffmpegInstallHint());
+    }
+
     const { chromium } = require('playwright');
     const browser = await chromium.launch();
     const page = await browser.newPage();
 
-    // Create HTML for slideshow
-    const slideshowHtml = this.createSlideshowHTML(script, visualAssets);
+    // Create HTML for slideshow (only real image files can be embedded)
+    const imageAssets = await this.filterImageAssets(visualAssets);
+    const slideshowHtml = this.createSlideshowHTML(script, imageAssets);
     
     // Set page content
     await page.setContent(slideshowHtml);
@@ -270,8 +273,14 @@ class AIVideoGenerator {
     await browser.close();
 
     // Convert frames to video using FFmpeg
-    const ffmpegCommand = `ffmpeg -framerate 30 -i "${framesDir}/frame_%06d.png" -c:v libx264 -pix_fmt yuv420p "${videoPath}"`;
-    await execAsync(ffmpegCommand);
+    await runFFmpeg([
+      '-y',
+      '-framerate', '30',
+      '-i', path.join(framesDir, 'frame_%06d.png'),
+      '-c:v', 'libx264',
+      '-pix_fmt', 'yuv420p',
+      videoPath
+    ]);
 
     // Add audio
     await this.addAudioToVideo(videoPath, audioPath, outputPath);
@@ -280,6 +289,26 @@ class AIVideoGenerator {
     await this.cleanupDirectory(framesDir);
 
     return outputPath;
+  }
+
+  async filterImageAssets(visualAssets = []) {
+    const imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.webp']);
+    const images = [];
+
+    for (const asset of visualAssets) {
+      if (typeof asset !== 'string' || !imageExtensions.has(path.extname(asset).toLowerCase())) {
+        continue;
+      }
+
+      try {
+        await fs.access(asset);
+        images.push(pathToFileURL(asset).href);
+      } catch (error) {
+        // Skip missing files
+      }
+    }
+
+    return images;
   }
 
   createSlideshowHTML(script, visualAssets) {
@@ -503,9 +532,42 @@ class AIVideoGenerator {
   }
 
   async addAudioToVideo(videoPath, audioPath, outputPath) {
-    const command = `ffmpeg -i "${videoPath}" -i "${audioPath}" -c:v copy -c:a aac -shortest "${outputPath}"`;
-    await execAsync(command);
+    const hasRealAudio = await this.isUsableAudioFile(audioPath);
+
+    if (!hasRealAudio) {
+      this.logger.warn('No narration audio available — producing silent video. Configure OpenAI, ElevenLabs, or Azure Speech for narration.');
+      if (videoPath !== outputPath) {
+        await fs.copyFile(videoPath, outputPath);
+      }
+      return outputPath;
+    }
+
+    // FFmpeg cannot write to its own input, so mux to a temp file when paths collide
+    const muxPath = outputPath === videoPath
+      ? outputPath.replace(/\.mp4$/i, '_muxed.mp4')
+      : outputPath;
+
+    await runFFmpeg(['-y', '-i', videoPath, '-i', audioPath, '-c:v', 'copy', '-c:a', 'aac', '-shortest', muxPath]);
+
+    if (muxPath !== outputPath) {
+      await fs.rename(muxPath, outputPath);
+    }
+
     this.logger.info('Audio added to video successfully');
+    return outputPath;
+  }
+
+  async isUsableAudioFile(audioPath) {
+    if (typeof audioPath !== 'string' || audioPath.endsWith('.info')) {
+      return false;
+    }
+
+    try {
+      const stats = await fs.stat(audioPath);
+      return stats.isFile() && stats.size > 0;
+    } catch (error) {
+      return false;
+    }
   }
 
   async downloadVideo(url, outputPath) {
