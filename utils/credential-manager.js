@@ -206,7 +206,8 @@ class CredentialManager {
         message: 'Select your preferred Gemini model:',
         choices: [
           'gemini-3.5-flash',
-          'gemini-3.5-pro'
+          'gemini-3.1-pro-preview',
+          'gemini-2.5-pro'
         ],
         default: 'gemini-3.5-flash'
       }

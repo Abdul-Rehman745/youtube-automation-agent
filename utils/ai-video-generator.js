@@ -28,6 +28,18 @@ class AIVideoGenerator {
     } else {
       this.logger.warn('Replicate API key not found - advanced video generation unavailable');
     }
+
+    // Gemini media generation (images + native TTS) — free-tier alternative to OpenAI
+    const geminiKey = credentials.gemini?.apiKey || process.env.GEMINI_API_KEY;
+    if (geminiKey) {
+      try {
+        const { GoogleGenAI } = require('@google/genai');
+        this.gemini = new GoogleGenAI({ apiKey: geminiKey });
+        this.logger.info('Gemini media service initialized (images + TTS)');
+      } catch (error) {
+        this.logger.warn('Failed to initialize Gemini media service:', error.message);
+      }
+    }
     
     // ElevenLabs configuration
     this.elevenLabsApiKey = credentials.elevenLabs?.apiKey || process.env.ELEVENLABS_API_KEY;
@@ -51,7 +63,12 @@ class AIVideoGenerator {
       if (this.openai) {
         return await this.generateOpenAITTS(text, outputPath);
       }
-      
+
+      // Fallback to Gemini native TTS (free tier)
+      if (this.gemini) {
+        return await this.generateGeminiTTS(text, outputPath);
+      }
+
       // Final fallback to simulation
       return await this.simulateTTSGeneration(text, outputPath);
     } catch (error) {
@@ -108,16 +125,48 @@ class AIVideoGenerator {
 
     const buffer = Buffer.from(await response.arrayBuffer());
     await fs.writeFile(outputPath, buffer);
-    
+
     this.logger.info('OpenAI TTS generation complete');
+    return outputPath;
+  }
+
+  async generateGeminiTTS(text, outputPath) {
+    const model = process.env.GEMINI_TTS_MODEL || 'gemini-3.1-flash-tts-preview';
+    const voiceName = process.env.GEMINI_TTS_VOICE || 'Kore';
+
+    const response = await this.gemini.models.generateContent({
+      model,
+      contents: [{ parts: [{ text }] }],
+      config: {
+        responseModalities: ['AUDIO'],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName }
+          }
+        }
+      }
+    });
+
+    const audioData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    if (!audioData) {
+      throw new Error('Gemini TTS returned no audio data');
+    }
+
+    // Gemini returns raw PCM (24kHz, mono, 16-bit); encode to the requested container via FFmpeg
+    const pcmPath = outputPath + '.pcm';
+    await fs.writeFile(pcmPath, Buffer.from(audioData, 'base64'));
+    await runFFmpeg(['-y', '-f', 's16le', '-ar', '24000', '-ac', '1', '-i', pcmPath, outputPath]);
+    await fs.unlink(pcmPath).catch(() => {});
+
+    this.logger.info('Gemini TTS generation complete');
     return outputPath;
   }
 
   async generateVisualAssets(prompt, style = "ethereal", count = 1) {
     this.logger.info(`Generating ${count} visual assets with style: ${style}`);
-    
+
     try {
-      if (!this.openai) {
+      if (!this.openai && !this.gemini) {
         return await this.simulateVisualAssets(prompt, style, count);
       }
 
@@ -125,21 +174,8 @@ class AIVideoGenerator {
       const localPaths = [];
 
       for (let i = 0; i < count; i++) {
-        const response = await this.openai.images.generate({
-          model: "gpt-image-2",
-          prompt: enhancedPrompt,
-          n: 1,
-          size: "1536x1024",
-          quality: "high",
-        });
-
         const imagePath = path.join(__dirname, '..', 'data', 'assets', `visual_${Date.now()}_${i}.png`);
-        if (response.data[0].b64_json) {
-          const buffer = Buffer.from(response.data[0].b64_json, 'base64');
-          await fs.writeFile(imagePath, buffer);
-        } else {
-          await this.downloadImage(response.data[0].url, imagePath);
-        }
+        await this.generateImage(enhancedPrompt, imagePath);
         localPaths.push(imagePath);
       }
 
@@ -149,6 +185,57 @@ class AIVideoGenerator {
       this.logger.error('Visual asset generation failed:', error);
       return await this.simulateVisualAssets(prompt, style, count);
     }
+  }
+
+  async generateImage(prompt, imagePath) {
+    await fs.mkdir(path.dirname(imagePath), { recursive: true });
+
+    if (this.openai) {
+      return await this.generateOpenAIImage(prompt, imagePath);
+    }
+
+    if (this.gemini) {
+      return await this.generateGeminiImage(prompt, imagePath);
+    }
+
+    throw new Error('No image generation provider configured');
+  }
+
+  async generateOpenAIImage(prompt, imagePath) {
+    const response = await this.openai.images.generate({
+      model: "gpt-image-2",
+      prompt: prompt,
+      n: 1,
+      size: "1536x1024",
+      quality: "high",
+    });
+
+    if (response.data[0].b64_json) {
+      const buffer = Buffer.from(response.data[0].b64_json, 'base64');
+      await fs.writeFile(imagePath, buffer);
+    } else {
+      await this.downloadImage(response.data[0].url, imagePath);
+    }
+
+    return imagePath;
+  }
+
+  async generateGeminiImage(prompt, imagePath) {
+    const model = process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image';
+
+    const response = await this.gemini.models.generateContent({
+      model,
+      contents: prompt
+    });
+
+    const parts = response.candidates?.[0]?.content?.parts || [];
+    const imagePart = parts.find(part => part.inlineData?.data);
+    if (!imagePart) {
+      throw new Error('Gemini image generation returned no image data');
+    }
+
+    await fs.writeFile(imagePath, Buffer.from(imagePart.inlineData.data, 'base64'));
+    return imagePath;
   }
 
   enhanceVisualPrompt(prompt, style) {
@@ -230,65 +317,92 @@ class AIVideoGenerator {
 
     const { chromium } = require('playwright');
     const browser = await chromium.launch();
-    const page = await browser.newPage();
+    const slidesDir = path.join(path.dirname(outputPath), 'slides');
 
-    // Create HTML for slideshow (only real image files can be embedded)
-    const imageAssets = await this.filterImageAssets(visualAssets);
-    const slideshowHtml = this.createSlideshowHTML(script, imageAssets);
-    
-    // Set page content
-    await page.setContent(slideshowHtml);
-    await page.setViewportSize({ width: 1920, height: 1080 });
+    try {
+      const page = await browser.newPage();
+      await page.setViewportSize({ width: 1920, height: 1080 });
 
-    // Record video of the slideshow
-    const videoPath = outputPath.replace('.mp4', '_visual.mp4');
-    
-    // Use Playwright to record
-    await page.waitForTimeout(1000); // Wait for assets to load
-    
-    // Create video frames by taking screenshots at intervals
-    const duration = this.calculateScriptDuration(script);
-    const frameCount = Math.ceil(duration * 30); // 30 FPS
-    const frameInterval = duration / frameCount * 1000;
+      // Create HTML for slideshow (only real image files can be embedded)
+      const imageAssets = await this.filterImageAssets(visualAssets);
+      await page.setContent(this.createSlideshowHTML(script, imageAssets));
 
-    const framesDir = path.join(path.dirname(outputPath), 'frames');
-    await fs.mkdir(framesDir, { recursive: true });
+      // Freeze CSS transitions/animations so each still is captured fully rendered
+      await page.addStyleTag({ content: '* { transition: none !important; animation: none !important; }' });
+      await page.waitForTimeout(1000); // Wait for assets to load
 
-    for (let i = 0; i < frameCount; i++) {
-      await page.screenshot({
-        path: path.join(framesDir, `frame_${String(i).padStart(6, '0')}.png`),
-        fullPage: true
-      });
-      
-      // Advance animation
-      await page.evaluate(() => {
-        if (window.advanceAnimation) {
-          window.advanceAnimation();
-        }
-      });
-      
-      await page.waitForTimeout(frameInterval);
+      // Capture ONE still per slide instead of screenshotting at 30fps —
+      // FFmpeg turns the stills into a crossfaded video in seconds.
+      const slideCount = await page.evaluate(() => document.querySelectorAll('.slide').length);
+      await fs.mkdir(slidesDir, { recursive: true });
+
+      const stills = [];
+      for (let i = 0; i < slideCount; i++) {
+        await page.evaluate((index) => {
+          document.querySelectorAll('.slide').forEach((slide, s) => {
+            slide.classList.toggle('active', s === index);
+          });
+        }, i);
+
+        const stillPath = path.join(slidesDir, `slide_${String(i).padStart(3, '0')}.png`);
+        await page.screenshot({ path: stillPath });
+        stills.push(stillPath);
+      }
+
+      const videoPath = outputPath.replace('.mp4', '_visual.mp4');
+      const duration = this.calculateScriptDuration(script);
+      await this.renderSlidesToVideo(stills, duration, videoPath);
+
+      // Add audio
+      await this.addAudioToVideo(videoPath, audioPath, outputPath);
+
+      return outputPath;
+    } finally {
+      await browser.close().catch(() => {});
+      await this.cleanupDirectory(slidesDir);
+    }
+  }
+
+  async renderSlidesToVideo(stills, totalDuration, videoPath) {
+    if (stills.length === 0) {
+      throw new Error('No slides to render');
     }
 
-    await browser.close();
+    const fade = 0.5;
+    const perSlide = Math.max(2, totalDuration / stills.length);
 
-    // Convert frames to video using FFmpeg
-    await runFFmpeg([
-      '-y',
-      '-framerate', '30',
-      '-i', path.join(framesDir, 'frame_%06d.png'),
+    const args = ['-y'];
+    for (const still of stills) {
+      args.push('-loop', '1', '-t', perSlide.toFixed(2), '-framerate', '30', '-i', still);
+    }
+
+    if (stills.length === 1) {
+      args.push('-vf', 'format=yuv420p', '-c:v', 'libx264', videoPath);
+      await runFFmpeg(args);
+      return videoPath;
+    }
+
+    // Chain crossfades: transition k starts fade seconds before slide k ends
+    const filters = [];
+    let prev = '[0:v]';
+    for (let i = 1; i < stills.length; i++) {
+      const out = `[v${i}]`;
+      const offset = (i * (perSlide - fade)).toFixed(2);
+      filters.push(`${prev}[${i}:v]xfade=transition=fade:duration=${fade}:offset=${offset}${out}`);
+      prev = out;
+    }
+    filters.push(`${prev}format=yuv420p[vfinal]`);
+
+    args.push(
+      '-filter_complex', filters.join(';'),
+      '-map', '[vfinal]',
       '-c:v', 'libx264',
-      '-pix_fmt', 'yuv420p',
+      '-r', '30',
       videoPath
-    ]);
+    );
 
-    // Add audio
-    await this.addAudioToVideo(videoPath, audioPath, outputPath);
-
-    // Cleanup frames
-    await this.cleanupDirectory(framesDir);
-
-    return outputPath;
+    await runFFmpeg(args);
+    return videoPath;
   }
 
   async filterImageAssets(visualAssets = []) {
@@ -600,31 +714,16 @@ class AIVideoGenerator {
 
   async generateThumbnail(script, style = "ethereal") {
     this.logger.info('Generating custom thumbnail...');
-    
+
     try {
-      if (!this.openai) {
+      if (!this.openai && !this.gemini) {
         return await this.simulateThumbnailGeneration(script, style);
       }
 
       const prompt = `YouTube thumbnail for "${script.title}", ${style} style, eye-catching, high contrast text, professional design, clickable, engaging`;
-      
-      const response = await this.openai.images.generate({
-        model: "gpt-image-2",
-        prompt: prompt,
-        n: 1,
-        size: "1536x1024",
-        quality: "high"
-      });
-
       const thumbnailPath = path.join(__dirname, '..', 'uploads', 'thumbnails', `thumbnail_${Date.now()}.png`);
-      await fs.mkdir(path.dirname(thumbnailPath), { recursive: true });
 
-      if (response.data[0].b64_json) {
-        const buffer = Buffer.from(response.data[0].b64_json, 'base64');
-        await fs.writeFile(thumbnailPath, buffer);
-      } else {
-        await this.downloadImage(response.data[0].url, thumbnailPath);
-      }
+      await this.generateImage(prompt, thumbnailPath);
 
       return {
         path: thumbnailPath,

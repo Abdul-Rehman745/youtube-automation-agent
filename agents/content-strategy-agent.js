@@ -344,15 +344,46 @@ Avoid fabricated claims and unsupported numbers.`;
   selectOptimalTopic() {
     // Use scoring algorithm to select best topic
     const recentTopics = this.getRecentTopics();
-    
+
     const scoredTopics = this.trendingTopics
       .filter(topic => !recentTopics.includes(topic.topic))
       .map(topic => ({
         ...topic,
         finalScore: topic.score * this.getSeasonalMultiplier(topic.topic) * this.getAudienceMultiplier(topic.topic)
-      }));
+      }))
+      .sort((a, b) => b.finalScore - a.finalScore);
 
-    return scoredTopics[0] || { topic: 'Technology Trends', score: 1 };
+    // Single keywords scraped from trending titles ("crown", "official") make
+    // meaningless video topics — only use a trend that reads like a real subject.
+    const readable = scoredTopics.find(t => t.topic.trim().includes(' ') && t.topic.trim().length >= 8);
+    if (readable) {
+      return readable;
+    }
+
+    const fallbackTopics = this.getEvergreenFallbackTopics();
+    const pick = fallbackTopics[Math.floor(Math.random() * fallbackTopics.length)];
+    this.logger.info(`Template mode: no readable trending topic available — using evergreen topic "${pick}"`);
+    return { topic: pick, score: 1 };
+  }
+
+  getEvergreenFallbackTopics() {
+    return [
+      'Time Management Strategies That Actually Work',
+      'Beginner Mistakes to Avoid When Learning a New Skill',
+      'How to Start a Side Project With Zero Budget',
+      'Simple Habits That Improve Focus and Productivity',
+      'How to Learn Anything Faster Using Proven Study Techniques',
+      'Practical Ways to Save Money Every Month',
+      'How Artificial Intelligence Is Changing Everyday Life',
+      'The Science of Building Habits That Stick',
+      'How to Give a Presentation People Actually Remember',
+      'Getting Started With Investing: A Beginner Roadmap',
+      'Digital Minimalism: Reclaiming Your Attention',
+      'How to Negotiate Anything: Tactics That Work',
+      'The Psychology of Procrastination and How to Beat It',
+      'Remote Work Productivity: Setting Up for Success',
+      'How to Read More Books Without Finding Extra Time'
+    ];
   }
 
   async generateAngle(topic) {

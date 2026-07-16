@@ -1,5 +1,12 @@
 # YouTube Automation Agent
 
+## What's New in v2.3
+
+- **Full free-tier pipeline with Gemini** — image generation (`gemini-3.1-flash-image`) and native voice narration (`gemini-3.1-flash-tts-preview`) now run on your Gemini key. A Gemini-only setup produces complete narrated videos end to end; OpenAI/ElevenLabs are used first when configured. Models and voice are configurable via `GEMINI_IMAGE_MODEL`, `GEMINI_TTS_MODEL`, `GEMINI_TTS_VOICE`. (Thanks to PR #6 for demonstrating the demand and fallback-chain direction.)
+- **~50× faster slideshow rendering** — instead of screenshotting a headless browser at 30fps (~10 minutes for a 30-second video), the renderer captures one still per slide and lets FFmpeg build the video with crossfades (seconds).
+- **No more junk template topics** — template mode (no AI key) previously scraped single keywords from trending titles and produced videos like "crown: The Complete Guide". It now uses a curated evergreen topic list and only accepts trending topics that read like real subjects.
+- **Model catalog corrections** — replaced the nonexistent `gemini-3.5-pro` picker entry with `gemini-3.1-pro-preview` / `gemini-2.5-pro` (verified against Google's current model list).
+
 ## What's New in v2.2
 
 This release resolves every open GitHub issue (#1, #2, #3, #4, #8, #9, #13):
@@ -121,7 +128,7 @@ Dashboard runs at `http://localhost:3456`.
 - FFmpeg — bundled automatically via `ffmpeg-static` on `npm install`; a system install on your PATH or an `FFMPEG_PATH` env var takes precedence
 - Google account (YouTube Data API — free)
 - At least one AI provider key (OpenAI, Gemini, OpenRouter, Kimi, MiMo, or GLM) — without one, agents fall back to template-based generation
-- Optional: an OpenAI key for image generation and a TTS provider (OpenAI / ElevenLabs / Azure) for narration — without them you get gradient slides and silent video
+- Images and narration come from your AI key: OpenAI **or Gemini** both cover image generation and TTS (ElevenLabs / Azure Speech optional for premium voices) — with no media provider at all you get gradient slides and silent video
 
 ## Configuration
 

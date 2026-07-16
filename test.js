@@ -23,6 +23,9 @@ class SystemTest {
       { name: 'Multi-Provider Credential Validation', test: () => this.testCredentialValidation() },
       { name: 'Placeholder Scheduling Guard', test: () => this.testPlaceholderSchedulingGuard() },
       { name: 'FFmpeg Resolution', test: () => this.testFFmpegResolution() },
+      { name: 'Gemini Media Provider Selection', test: () => this.testGeminiMediaProvider() },
+      { name: 'Slideshow Renderer', test: () => this.testSlideshowRenderer() },
+      { name: 'Evergreen Template Topics', test: () => this.testEvergreenTopics() },
       { name: 'Logger System', test: () => this.testLogger() },
       { name: 'Directory Structure', test: () => this.testDirectories() },
       { name: 'Agent Loading', test: () => this.testAgentLoading() },
@@ -356,6 +359,111 @@ class SystemTest {
     }
 
     this.logger.info(`FFmpeg resolution test completed (binary: ${ffmpegPath}, available: ${available})`);
+  }
+
+  async testGeminiMediaProvider() {
+    const { AIVideoGenerator } = require('./utils/ai-video-generator');
+
+    const envKeys = ['OPENAI_API_KEY', 'GEMINI_API_KEY', 'REPLICATE_API_KEY', 'ELEVENLABS_API_KEY'];
+    const savedEnv = {};
+    for (const key of envKeys) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+
+    try {
+      const geminiOnly = new AIVideoGenerator({ gemini: { apiKey: 'test-key' } });
+      if (!geminiOnly.gemini) {
+        throw new Error('Gemini media service was not initialized from gemini credentials');
+      }
+      if (geminiOnly.openai) {
+        throw new Error('OpenAI client initialized without a key');
+      }
+
+      const none = new AIVideoGenerator({});
+      if (none.gemini || none.openai) {
+        throw new Error('Media services initialized without any credentials');
+      }
+    } finally {
+      for (const key of envKeys) {
+        if (savedEnv[key] === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = savedEnv[key];
+        }
+      }
+    }
+
+    this.logger.info('Gemini media provider selection test completed successfully');
+  }
+
+  async testSlideshowRenderer() {
+    const { AIVideoGenerator } = require('./utils/ai-video-generator');
+    const { checkFFmpeg } = require('./utils/ffmpeg');
+    const fs = require('fs').promises;
+    const os = require('os');
+
+    if (!(await checkFFmpeg())) {
+      this.logger.warn('FFmpeg unavailable — skipping slideshow renderer test');
+      return;
+    }
+
+    const sharp = require('sharp');
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaa-slides-'));
+
+    try {
+      const stills = [];
+      for (let i = 0; i < 3; i++) {
+        const stillPath = path.join(dir, `slide_${i}.png`);
+        await sharp({
+          create: { width: 320, height: 180, channels: 3, background: { r: 60 * i, g: 80, b: 160 } }
+        }).png().toFile(stillPath);
+        stills.push(stillPath);
+      }
+
+      const generator = new AIVideoGenerator({});
+      const videoPath = path.join(dir, 'out.mp4');
+      await generator.renderSlidesToVideo(stills, 6, videoPath);
+
+      const stats = await fs.stat(videoPath);
+      if (!stats.size) {
+        throw new Error('Rendered slideshow video is empty');
+      }
+
+      // Silent fallback: an unusable audio path must still yield a playable output
+      const finalPath = path.join(dir, 'final.mp4');
+      await generator.addAudioToVideo(videoPath, path.join(dir, 'missing.mp3'), finalPath);
+      const finalStats = await fs.stat(finalPath);
+      if (!finalStats.size) {
+        throw new Error('Silent-audio fallback did not produce a video');
+      }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+
+    this.logger.info('Slideshow renderer test completed successfully');
+  }
+
+  async testEvergreenTopics() {
+    const { ContentStrategyAgent } = require('./agents/content-strategy-agent');
+    const agent = new ContentStrategyAgent(null, {});
+    agent.historicalPerformance = [];
+
+    // Single scraped keywords must never become video topics
+    agent.trendingTopics = [{ topic: 'crown', score: 5 }, { topic: 'official', score: 3 }];
+    const fallback = agent.selectOptimalTopic();
+    if (!fallback.topic.includes(' ') || fallback.topic.length < 8) {
+      throw new Error(`Template mode produced a junk topic: "${fallback.topic}"`);
+    }
+
+    // A readable multi-word trend should be used when available
+    agent.trendingTopics = [{ topic: 'artificial intelligence explained', score: 5 }];
+    const readable = agent.selectOptimalTopic();
+    if (readable.topic !== 'artificial intelligence explained') {
+      throw new Error(`Readable trending topic was not selected: "${readable.topic}"`);
+    }
+
+    this.logger.info('Evergreen template topics test completed successfully');
   }
 
   async testLogger() {
