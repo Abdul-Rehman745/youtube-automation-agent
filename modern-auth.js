@@ -48,6 +48,17 @@ class ModernAuth {
 
       console.log(chalk.cyan('🔗 Please visit this URL to authorize:'));
       console.log(chalk.blue(authUrl));
+
+      // Best effort: open the URL in the default browser
+      const { exec } = require('child_process');
+      const openCommands = {
+        win32: `start "" "${authUrl}"`,
+        darwin: `open "${authUrl}"`,
+        linux: `xdg-open "${authUrl}"`
+      };
+      if (openCommands[process.platform]) {
+        exec(openCommands[process.platform], () => {});
+      }
       console.log(chalk.yellow(`\n⚡ A temporary server is running on port ${port}`));
       console.log(chalk.yellow('After authorization, you\'ll be redirected automatically.'));
       console.log(chalk.gray('Waiting for authorization...'));

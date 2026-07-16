@@ -1,5 +1,12 @@
 # YouTube Automation Agent
 
+## What's New in v2.4
+
+- **Guided walkthrough for first-time setup** — `npm run walkthrough` (also offered when you run `npm run setup`). It explains every choice in plain English, shows exactly where to get each key (and opens the page in your browser), **live-tests keys the moment you paste them**, walks you click-by-click through Google Cloud for the YouTube connection, and signs you in via your browser instead of copy-pasting auth codes. Every step is skippable and progress is saved — re-run it any time.
+- **`.env` files actually work now** — `dotenv` was a dependency but was never loaded, so `.env` settings (API keys, `API_KEY`, `FFMPEG_PATH`…) were silently ignored unless exported in your shell. `index.js` and the setup tools now load `.env` on start.
+- **`.env.example` no longer poisons setup** — the uncommented `OPENAI_API_KEY=your-openai-api-key-here` placeholder would have been picked up as a real key; all placeholders are now commented out.
+- **Browser OAuth opens automatically** — the YouTube authorization URL now opens in your default browser.
+
 ## What's New in v2.3
 
 - **Full free-tier pipeline with Gemini** — image generation (`gemini-3.1-flash-image`) and native voice narration (`gemini-3.1-flash-tts-preview`) now run on your Gemini key. A Gemini-only setup produces complete narrated videos end to end; OpenAI/ElevenLabs are used first when configured. Models and voice are configurable via `GEMINI_IMAGE_MODEL`, `GEMINI_TTS_MODEL`, `GEMINI_TTS_VOICE`. (Thanks to PR #6 for demonstrating the demand and fallback-chain direction.)
@@ -114,13 +121,13 @@ Additional integrations: Anthropic Claude (`claude-opus-4-8`), ElevenLabs (Eleve
 git clone https://github.com/darkzOGx/youtube-automation-agent.git
 cd youtube-automation-agent
 npm install
-cp .env.example .env
-cp config/credentials.example.json config/credentials.json
-npm run setup   # interactive credential wizard
+npm run walkthrough   # guided first-time setup: explains everything, tests your keys live
 npm start
 ```
 
 Dashboard runs at `http://localhost:3456`.
+
+Already know what you're doing? `npm run setup` offers a classic quick mode, and `.env.example` documents every setting.
 
 ### Prerequisites
 

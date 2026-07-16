@@ -1,7 +1,10 @@
+require('dotenv').config();
+
 const { CredentialManager } = require('./utils/credential-manager');
 const { Database } = require('./database/db');
 const { Logger } = require('./utils/logger');
 const chalk = require('chalk');
+const inquirer = require('inquirer');
 const fs = require('fs').promises;
 const path = require('path');
 
@@ -17,6 +20,21 @@ class YouTubeAutomationSetup {
     console.log(chalk.gray('═'.repeat(60)));
     console.log(chalk.cyan('Welcome to the YouTube Automation Agent setup wizard!'));
     console.log(chalk.gray('This will configure your system for fully automated YouTube content creation.\n'));
+
+    const { mode } = await inquirer.prompt([{
+      type: 'list',
+      name: 'mode',
+      message: 'How would you like to set up?',
+      choices: [
+        { name: '🧭 Guided walkthrough — explains everything, tests keys as you go (recommended for first-timers)', value: 'walkthrough' },
+        { name: '⚡ Classic quick setup — for users who already have all their keys', value: 'classic' }
+      ]
+    }]);
+
+    if (mode === 'walkthrough') {
+      const { SetupWalkthrough } = require('./walkthrough');
+      return await new SetupWalkthrough().run();
+    }
 
     try {
       // Step 1: Create directories

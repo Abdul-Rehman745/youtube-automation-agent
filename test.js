@@ -26,6 +26,7 @@ class SystemTest {
       { name: 'Gemini Media Provider Selection', test: () => this.testGeminiMediaProvider() },
       { name: 'Slideshow Renderer', test: () => this.testSlideshowRenderer() },
       { name: 'Evergreen Template Topics', test: () => this.testEvergreenTopics() },
+      { name: 'Walkthrough Module', test: () => this.testWalkthroughModule() },
       { name: 'Logger System', test: () => this.testLogger() },
       { name: 'Directory Structure', test: () => this.testDirectories() },
       { name: 'Agent Loading', test: () => this.testAgentLoading() },
@@ -464,6 +465,56 @@ class SystemTest {
     }
 
     this.logger.info('Evergreen template topics test completed successfully');
+  }
+
+  async testWalkthroughModule() {
+    const { SetupWalkthrough, AI_PROVIDER_GUIDE } = require('./walkthrough');
+    const { PROVIDERS } = require('./utils/ai-text-service');
+
+    const walkthrough = new SetupWalkthrough();
+    if (typeof walkthrough.run !== 'function') {
+      throw new Error('SetupWalkthrough.run is not implemented');
+    }
+
+    // Every guided provider must be complete and coherent
+    for (const [id, guide] of Object.entries(AI_PROVIDER_GUIDE)) {
+      for (const field of ['label', 'keyUrl', 'instructions', 'models', 'defaultModel', 'save', 'validationCreds']) {
+        if (!guide[field]) {
+          throw new Error(`Provider guide "${id}" is missing "${field}"`);
+        }
+      }
+      if (!guide.models.includes(guide.defaultModel)) {
+        throw new Error(`Provider guide "${id}" default model is not in its model list`);
+      }
+
+      // save() must produce credentials that pass validation
+      const credentials = {};
+      guide.save(credentials, 'test-key', guide.defaultModel);
+      const manager = new CredentialManager();
+      manager.credentials = { youtube: { client_id: 'x' }, ...credentials };
+
+      const envKeys = [...Object.values(PROVIDERS).map(p => p.envKey), 'GEMINI_API_KEY'];
+      const savedEnv = {};
+      for (const key of envKeys) {
+        savedEnv[key] = process.env[key];
+        delete process.env[key];
+      }
+      try {
+        if (manager.getMissingCredentials().length !== 0) {
+          throw new Error(`Provider guide "${id}" save() output fails credential validation`);
+        }
+      } finally {
+        for (const key of envKeys) {
+          if (savedEnv[key] === undefined) {
+            delete process.env[key];
+          } else {
+            process.env[key] = savedEnv[key];
+          }
+        }
+      }
+    }
+
+    this.logger.info('Walkthrough module test completed successfully');
   }
 
   async testLogger() {

@@ -1,11 +1,12 @@
 {
   "name": "youtube-automation-agent",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "Fully automated YouTube channel management system with specialized AI agents",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "setup": "node setup.js",
+    "walkthrough": "node walkthrough.js",
     "scheduler": "node schedules/daily-automation.js",
     "test": "node test.js",
     "agent:strategy": "node agents/content-strategy-agent.js",
