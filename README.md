@@ -338,6 +338,8 @@ If this was useful, check out:
 
 ## Contributing
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for ground rules (short version: one focused concern per PR, no lockfile churn, lint + tests must pass). For questions and setup help, use [Discussions](https://github.com/darkzOGx/youtube-automation-agent/discussions) — Issues is for bugs.
+
 1. Fork the repo
 2. Create a feature branch
 3. Make changes and add tests
