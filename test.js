@@ -613,6 +613,27 @@ class SystemTest {
     // Check if main index file exists
     await fs.access('./index.js');
 
+    // The startup banner must report the real version. It was hardcoded to "v2.0"
+    // through v2.4.0, so bug reports pasted a version that was four releases stale.
+    const indexSource = await fs.readFile('index.js', 'utf8');
+    const hardcodedBanner = indexSource.match(/YouTube Automation Agent v[\d.]/);
+    if (hardcodedBanner) {
+      throw new Error(
+        `Startup banner hardcodes a version ("${hardcodedBanner[0]}") — interpolate package.json's version instead`
+      );
+    }
+    if (!indexSource.includes('YouTube Automation Agent v${version}')) {
+      throw new Error('Startup banner does not report the package.json version');
+    }
+
+    // package.json and package-lock.json drifted apart before v2.4.1; keep them aligned
+    const lockJson = JSON.parse(await fs.readFile('package-lock.json', 'utf8'));
+    if (lockJson.version !== packageJson.version) {
+      throw new Error(
+        `package-lock.json version (${lockJson.version}) does not match package.json (${packageJson.version})`
+      );
+    }
+
     this.logger.info('Configuration test completed successfully');
   }
 }

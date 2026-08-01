@@ -13,6 +13,7 @@ const { ProductionManagementAgent } = require('./agents/production-management-ag
 const { PublishingSchedulingAgent } = require('./agents/publishing-scheduling-agent');
 const { AnalyticsOptimizationAgent } = require('./agents/analytics-optimization-agent');
 const { DailyAutomation } = require('./schedules/daily-automation');
+const { version } = require('./package.json');
 const chalk = require('chalk');
 
 class YouTubeAutomationAgent {
@@ -27,7 +28,7 @@ class YouTubeAutomationAgent {
 
   async initialize() {
     try {
-      console.log(chalk.cyan.bold('\n🎬 YouTube Automation Agent v2.0'));
+      console.log(chalk.cyan.bold(`\n🎬 YouTube Automation Agent v${version}`));
       console.log(chalk.gray('─'.repeat(50)));
       
       // Initialize database
