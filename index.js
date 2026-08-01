@@ -153,7 +153,10 @@ class YouTubeAutomationAgent {
       length: typeof body.length === 'string' ? body.length : 'medium'
     };
 
-    if (body.topic !== undefined) {
+    // JSON has no `undefined`, so clients send `null` to mean "no value provided".
+    // Both are treated as "not set" here: topic/style are optional and default to
+    // auto-selection, which is exactly what `null` already represents internally.
+    if (body.topic !== undefined && body.topic !== null) {
       if (typeof body.topic !== 'string') {
         return { valid: false, status: 400, error: 'topic must be a string' };
       }
@@ -165,7 +168,7 @@ class YouTubeAutomationAgent {
       value.topic = topic || null;
     }
 
-    if (body.style !== undefined) {
+    if (body.style !== undefined && body.style !== null) {
       if (typeof body.style !== 'string') {
         return { valid: false, status: 400, error: 'style must be a string' };
       }

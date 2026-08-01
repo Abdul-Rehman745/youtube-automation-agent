@@ -171,6 +171,31 @@ class SystemTest {
       throw new Error('Non-string topic was not rejected');
     }
 
+    // The dashboard's "Generate Content Now" button sends an explicit null topic
+    // to mean "pick a trending topic for me". null must be accepted, not rejected.
+    const dashboardPayload = agent.validateGenerateRequestBody({ topic: null, style: 'story' });
+    if (!dashboardPayload.valid) {
+      throw new Error(`Dashboard generate payload was rejected: ${dashboardPayload.error}`);
+    }
+    if (dashboardPayload.value.topic !== null || dashboardPayload.value.style !== 'story') {
+      throw new Error('Null topic was not normalised to an auto-selected topic');
+    }
+
+    const nullStyle = agent.validateGenerateRequestBody({ topic: 'Node automation', style: null });
+    if (!nullStyle.valid || nullStyle.value.style !== null) {
+      throw new Error('Null style was not accepted as "no style preference"');
+    }
+
+    const nullLength = agent.validateGenerateRequestBody({ topic: null, style: null, length: null });
+    if (!nullLength.valid || nullLength.value.length !== 'medium') {
+      throw new Error('Null length did not fall back to the default length');
+    }
+
+    const blankTopic = agent.validateGenerateRequestBody({ topic: '   ' });
+    if (!blankTopic.valid || blankTopic.value.topic !== null) {
+      throw new Error('Whitespace-only topic was not normalised to null');
+    }
+
     const invalidStyle = agent.validateGenerateRequestBody({ style: 'x'.repeat(51) });
     if (invalidStyle.valid || invalidStyle.status !== 400) {
       throw new Error('Overlong style was not rejected');
