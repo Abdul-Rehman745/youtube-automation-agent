@@ -373,12 +373,12 @@ MIT — see [LICENSE](LICENSE).
 
 ## Acknowledgments
 
-- [OpenAI](https://openai.com/) — GPT-5.5, GPT Image 2, GPT-4o-mini-tts
+- [OpenAI](https://openai.com/) — GPT-5.6 Sol, GPT Image 2, GPT-4o-mini-tts
 - [OpenRouter](https://openrouter.ai/) — unified multi-model API
-- [Google](https://ai.google.dev/) — YouTube Data API, Gemini 3.5
-- [Moonshot AI](https://www.moonshot.ai/) — Kimi K2.6
-- [Xiaomi](https://mimo.mi.com/) — MiMo V2.5
-- [Zhipu AI](https://z.ai/) — GLM-5
+- [Google](https://ai.google.dev/) — YouTube Data API, Gemini 3.6 Flash
+- [Moonshot AI](https://www.moonshot.ai/) — Kimi K3
+- [Xiaomi](https://mimo.mi.com/) — MiMo V2.5 Pro
+- [Zhipu AI](https://z.ai/) — GLM-5.2
 - [ElevenLabs](https://elevenlabs.io/) — Eleven v3 TTS
 - [Replicate](https://replicate.com/) — Wan 2.7 video generation
 - [ConstructionBids.ai](https://constructionbids.ai) - AI scans every federal, state & local public works bid and matches you to contracts you'll win.
