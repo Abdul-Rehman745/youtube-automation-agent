@@ -279,7 +279,11 @@ class AIVideoGenerator {
       // Fallback to simple slideshow with Playwright
       return await this.generateSlideshowVideo(script, visualAssets, audioPath, outputPath);
     } catch (error) {
-      this.logger.error('Video generation failed:', error);
+      // The Logger's console line only shows the message string, so put the real
+      // reason inline. Previously the stack alone went to the file transport and
+      // the console printed "Video generation failed:" with no detail.
+      const reason = error && error.message ? error.message : String(error);
+      this.logger.error(`Video generation failed: ${reason}`, error);
       return await this.simulateVideoGeneration(script, visualAssets, audioPath, outputPath);
     }
   }

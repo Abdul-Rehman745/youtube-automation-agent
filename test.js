@@ -21,6 +21,7 @@ class SystemTest {
       { name: 'API Validation and Security', test: () => this.testAPIValidationAndSecurity() },
       { name: 'Publishing Safety', test: () => this.testPublishingSafety() },
       { name: 'Multi-Provider Credential Validation', test: () => this.testCredentialValidation() },
+      { name: 'AI Text Service Token Compatibility', test: () => this.testAITextServiceTokenParams() },
       { name: 'Placeholder Scheduling Guard', test: () => this.testPlaceholderSchedulingGuard() },
       { name: 'FFmpeg Resolution', test: () => this.testFFmpegResolution() },
       { name: 'Gemini Media Provider Selection', test: () => this.testGeminiMediaProvider() },
@@ -326,6 +327,69 @@ class SystemTest {
     }
 
     this.logger.info('Credential validation test completed successfully');
+  }
+
+  async testAITextServiceTokenParams() {
+    const { AITextService } = require('./utils/ai-text-service');
+
+    const savedEnv = process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    try {
+      const service = new AITextService({
+        aiProvider: { provider: 'openai', apiKey: 'test-key', model: 'gpt-5.5' }
+      });
+
+      // Newer OpenAI models (gpt-5.x) reject max_tokens — the request must use
+      // max_completion_tokens, never the legacy spelling.
+      const calls = [];
+      service.client.chat.completions.create = async (params) => {
+        calls.push(params);
+        return { choices: [{ message: { content: '{"ok":true}' } }] };
+      };
+
+      const result = await service.generateText('test prompt', { maxTokens: 512 });
+      if (result !== '{"ok":true}') throw new Error('generateText did not return the model content');
+      if (calls[0].max_completion_tokens !== 512) {
+        throw new Error('Modern models must receive max_completion_tokens, not max_tokens');
+      }
+      if (calls[0].max_tokens !== undefined) {
+        throw new Error('Legacy max_tokens must not be sent to modern models');
+      }
+
+      // Legacy models reject max_completion_tokens with a 400 — the service must
+      // retry the identical request using max_tokens.
+      let attempt = 0;
+      service.client.chat.completions.create = async (_params) => {
+        attempt++;
+        if (attempt === 1) {
+          const err = new Error("Unsupported parameter: 'max_completion_tokens' is not supported with this model.");
+          err.status = 400;
+          throw err;
+        }
+        return { choices: [{ message: { content: 'legacy-ok' } }] };
+      };
+      const legacyResult = await service.generateText('legacy prompt');
+      if (legacyResult !== 'legacy-ok') throw new Error('Legacy fallback did not return content');
+      if (attempt !== 2) throw new Error('Expected exactly one retry with max_tokens');
+
+      // An empty model body must surface as a descriptive error, not the cryptic
+      // "Unexpected end of JSON input" the agents used to log.
+      service.client.chat.completions.create = async () => ({ choices: [{ message: { content: '' } }] });
+      let emptyRejected = false;
+      try {
+        await service.generateText('empty prompt');
+      } catch (error) {
+        emptyRejected = /empty response/i.test(error.message);
+      }
+      if (!emptyRejected) {
+        throw new Error('Empty response was not rejected with a descriptive error');
+      }
+    } finally {
+      if (savedEnv === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = savedEnv;
+    }
+
+    this.logger.info('AI text service token parameter test completed successfully');
   }
 
   async testPlaceholderSchedulingGuard() {

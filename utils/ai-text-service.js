@@ -104,21 +104,68 @@ class AITextService {
         contents: prompt,
         config: { maxOutputTokens: maxTokens, temperature },
       });
-      return response.text;
+      const text = response && response.text;
+      if (typeof text !== 'string' || !text.trim()) {
+        throw new Error(
+          `${this.providerName} returned an empty response. Check the API key and model quota — free-tier Gemini keys are rate-limited and can return empty output.`
+        );
+      }
+      return text;
     }
 
     if (!this.client) {
       throw new Error('No AI text provider configured');
     }
 
-    const response = await this.client.chat.completions.create({
+    const params = {
       model,
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: maxTokens,
       temperature,
-    });
+    };
 
-    return response.choices[0].message.content;
+    try {
+      // Newer OpenAI models (gpt-5.x and later) reject the legacy max_tokens
+      // parameter with a 400 error and require max_completion_tokens instead.
+      const response = await this.client.chat.completions.create({
+        ...params,
+        max_completion_tokens: maxTokens,
+      });
+      return this._extractContent(response);
+    } catch (error) {
+      // Older models and some providers reject max_completion_tokens with a 400;
+      // retry the same request using the legacy max_tokens spelling.
+      if (
+        error &&
+        error.status === 400 &&
+        /max(_completion)?_tokens/i.test(error.message || '')
+      ) {
+        const response = await this.client.chat.completions.create({
+          ...params,
+          max_tokens: maxTokens,
+        });
+        return this._extractContent(response);
+      }
+      throw error;
+    }
+  }
+
+  _extractContent(response) {
+    const content =
+      response &&
+      response.choices &&
+      response.choices[0] &&
+      response.choices[0].message
+        ? response.choices[0].message.content
+        : null;
+
+    if (typeof content !== 'string' || !content.trim()) {
+      // A null/empty body used to surface as cryptic "Unexpected end of JSON input"
+      // in the agents' JSON parsers. Report the real cause instead.
+      throw new Error(
+        `${this.providerName} returned an empty response. Check the API key and model quota.`
+      );
+    }
+    return content;
   }
 
   isAvailable() {
