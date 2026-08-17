@@ -120,9 +120,12 @@ Topic: ${strategy.topic}
 Style/content type: ${strategy.contentType}
 Angle: ${strategy.angle}
 Target audience: ${strategy.targetAudience}
-Desired length: ${process.env.DEFAULT_VIDEO_LENGTH || '8-12 minutes'}
+Desired length: ${strategy.requestedLength || process.env.DEFAULT_VIDEO_LENGTH || '8-12 minutes'}
 Tone: ${template.tone}
 Pacing: ${template.pacing}
+Brand voice: ${strategy.brandVoice || 'clear, credible, and engaging'}
+Channel goal: ${strategy.channelGoal || 'help the viewer understand and act'}
+Preferred call to action: ${strategy.callToAction || 'invite the viewer to subscribe'}
 Keywords: ${(strategy.keywords || []).join(', ')}
 Avoid fabricated statistics, unsupported claims, and fake urgency.`;
 
@@ -342,7 +345,7 @@ Avoid fabricated statistics, unsupported claims, and fake urgency.`;
     return propositions[strategy.contentType] || `everything about ${strategy.topic}`;
   }
 
-  getCredibilityStatement(strategy) {
+  getCredibilityStatement(_strategy) {
     const statements = [
       "I've spent months researching this topic",
       "After working with hundreds of people on this",
@@ -442,11 +445,11 @@ Avoid fabricated statistics, unsupported claims, and fake urgency.`;
     return titles[stepNumber - 1] || `Advanced ${topic} Techniques`;
   }
 
-  generateStepDescription(topic, stepNumber) {
+  generateStepDescription(topic, _stepNumber) {
     return `This step involves understanding the key aspects of ${topic} and how to apply them effectively. Pay special attention to the details here, as they make all the difference.`;
   }
 
-  generateProTip(topic) {
+  generateProTip(_topic) {
     const tips = [
       `Pro tip: Start small and scale gradually`,
       `Remember: Consistency is more important than perfection`,
@@ -458,7 +461,7 @@ Avoid fabricated statistics, unsupported claims, and fake urgency.`;
     return tips[Math.floor(Math.random() * tips.length)];
   }
 
-  async generateDemonstration(strategy) {
+  async generateDemonstration(_strategy) {
     return {
       type: 'demonstration',
       title: 'Live Demo',
@@ -559,7 +562,7 @@ Avoid fabricated statistics, unsupported claims, and fake urgency.`;
     return impacts[Math.floor(Math.random() * impacts.length)];
   }
 
-  async generatePros(strategy) {
+  async generatePros(_strategy) {
     return {
       type: 'pros',
       title: 'The Benefits',
@@ -574,7 +577,7 @@ Avoid fabricated statistics, unsupported claims, and fake urgency.`;
     };
   }
 
-  async generateCons(strategy) {
+  async generateCons(_strategy) {
     return {
       type: 'cons',
       title: 'Things to Consider',

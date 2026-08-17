@@ -18,6 +18,7 @@ class SystemTest {
       { name: 'Database Connection', test: () => this.testDatabase() },
       { name: 'Production Persistence', test: () => this.testProductionPersistence() },
       { name: 'Automation Events Table', test: () => this.testAutomationEventsTable() },
+      { name: 'Operator Workflow API', test: () => this.testOperatorWorkflowAPI() },
       { name: 'API Validation and Security', test: () => this.testAPIValidationAndSecurity() },
       { name: 'Publishing Safety', test: () => this.testPublishingSafety() },
       { name: 'Multi-Provider Credential Validation', test: () => this.testCredentialValidation() },
@@ -146,6 +147,65 @@ class SystemTest {
     await db.executeQuery('DELETE FROM automation_events WHERE event_type = ?', ['test_event']);
     await db.close();
     this.logger.info('Automation events table test completed successfully');
+  }
+
+  async testOperatorWorkflowAPI() {
+    const { YouTubeAutomationAgent } = require('./index');
+    const { OperatorService } = require('./utils/operator-service');
+    const db = new Database();
+    await db.initialize();
+    let server;
+    let job;
+
+    try {
+      job = await db.createGenerationJob({ topic: 'Operator workflow test', style: 'explainer', length: 'short' });
+      await db.updateGenerationJob(job.id, { status: 'running', stage: 'script', progress: 25 });
+      const updated = await db.getGenerationJob(job.id);
+      if (updated.stage !== 'script' || updated.progress !== 25) {
+        throw new Error('Generation job progress was not persisted');
+      }
+
+      const operator = new OperatorService(db);
+      const quality = await operator.runQualityChecks({
+        script: { title: 'Test title', fullScript: 'x'.repeat(250) },
+        seo: { title: 'Test title', description: 'x'.repeat(80), tags: ['one', 'two', 'three'] },
+        assets: { finalVideo: { path: 'placeholder.info', simulated: true } }
+      }, { bannedTopics: [] });
+      if (quality.passed || !quality.blockingFailures.includes('video')) {
+        throw new Error('Quality gate did not block a simulated video');
+      }
+
+      const agent = new YouTubeAutomationAgent();
+      agent.db = db;
+      agent.operator = operator;
+      agent.agents = {
+        analytics: {
+          getRecentAnalytics: async () => ({ totalVideos: 0, averagePerformanceScore: 0, topPerformers: [], insights: [] })
+        }
+      };
+      agent.scheduler = {
+        isEnabled: true,
+        pauseAutomation: async function() { this.isEnabled = false; },
+        resumeAutomation: async function() { this.isEnabled = true; }
+      };
+      agent.isInitialized = true;
+      agent.setupAPI();
+      server = await new Promise(resolve => {
+        const running = agent.app.listen(0, () => resolve(running));
+      });
+      const { port } = server.address();
+      const response = await fetch(`http://127.0.0.1:${port}/api/dashboard`);
+      const dashboard = await response.json();
+      if (!response.ok || !Array.isArray(dashboard.jobs) || !Array.isArray(dashboard.pipeline)) {
+        throw new Error('Operator dashboard API did not return its data contract');
+      }
+    } finally {
+      if (server) await new Promise(resolve => server.close(resolve));
+      if (job) await db.executeQuery('DELETE FROM generation_jobs WHERE id = ?', [job.id]);
+      await db.close();
+    }
+
+    this.logger.info('Operator workflow API test completed successfully');
   }
 
   async testAPIValidationAndSecurity() {

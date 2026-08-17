@@ -2,7 +2,7 @@ const cron = require('node-cron');
 const { Logger } = require('../utils/logger');
 
 class DailyAutomation {
-  constructor(agents, database) {
+  constructor(agents, database, options = {}) {
     this.agents = agents;
     this.db = database;
     this.logger = new Logger('DailyAutomation');
@@ -10,6 +10,7 @@ class DailyAutomation {
     this.isEnabled = true;
     this.healthCheckInterval = null;
     this.lastHealthCheck = null;
+    this.generateContent = options.generateContent || null;
   }
 
   async initialize() {
@@ -97,6 +98,15 @@ class DailyAutomation {
       
       if (!shouldGenerate) {
         this.logger.info('Skipping content generation - sufficient content in pipeline');
+        return;
+      }
+
+      if (this.generateContent) {
+        const job = await this.generateContent({ source: 'scheduler' });
+        await this.db.setSetting('last_content_generation', new Date().toISOString());
+        timer.end();
+        this.logger.success(`Daily content generation queued: ${job.id}`);
+        await this.logAutomationEvent('daily_content_generation', 'queued', { jobId: job.id });
         return;
       }
 
@@ -208,6 +218,7 @@ class DailyAutomation {
       await this.logAutomationEvent('queue_processing', 'error', {
         error: error.message
       });
+      await this.sendFailureNotification('Publishing Queue', error);
     }
   }
 
@@ -246,6 +257,7 @@ class DailyAutomation {
       await this.logAutomationEvent('analytics_collection', 'error', {
         error: error.message
       });
+      await this.sendFailureNotification('Analytics Collection', error);
     }
   }
 
@@ -418,7 +430,6 @@ class DailyAutomation {
 
   async cleanupOldFiles() {
     // Clean up temporary files older than 7 days
-    const fs = require('fs').promises;
     const path = require('path');
     
     const tempDir = path.join(__dirname, '..', 'temp');
@@ -474,9 +485,14 @@ class DailyAutomation {
   async sendFailureNotification(taskName, error) {
     // This would integrate with notification services (email, Slack, etc.)
     this.logger.error(`AUTOMATION FAILURE - ${taskName}: ${error.message}`);
-    
-    // Could send webhook notification, email, etc.
-    // For now, just log it prominently
+    if (this.db.createNotification) {
+      await this.db.createNotification({
+        type: 'automation_failure',
+        level: 'error',
+        title: `${taskName} failed`,
+        message: error.message
+      });
+    }
   }
 
   startMonitoringLoop() {

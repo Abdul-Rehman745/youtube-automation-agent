@@ -1,447 +1,154 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ethereal Dreamscript - YouTube Automation Dashboard</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: #333;
-            min-height: 100vh;
-        }
-        
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        
-        .header {
-            text-align: center;
-            color: white;
-            margin-bottom: 30px;
-        }
-        
-        .header h1 {
-            font-size: 2.5em;
-            margin-bottom: 10px;
-        }
-        
-        .header p {
-            font-size: 1.2em;
-            opacity: 0.9;
-        }
-        
-        .status-bar {
-            background: rgba(255, 255, 255, 0.95);
-            padding: 20px;
-            border-radius: 15px;
-            margin-bottom: 30px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-        }
-        
-        .status-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin-bottom: 20px;
-        }
-        
-        .status-card {
-            text-align: center;
-            padding: 15px;
-            background: linear-gradient(45deg, #f093fb 0%, #f5576c 100%);
-            border-radius: 10px;
-            color: white;
-        }
-        
-        .status-card h3 {
-            font-size: 2em;
-            margin-bottom: 5px;
-        }
-        
-        .status-card p {
-            opacity: 0.9;
-        }
-        
-        .dashboard-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-            gap: 20px;
-        }
-        
-        .dashboard-card {
-            background: rgba(255, 255, 255, 0.95);
-            padding: 25px;
-            border-radius: 15px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
-        }
-        
-        .dashboard-card h2 {
-            color: #667eea;
-            margin-bottom: 15px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        
-        .card-content {
-            line-height: 1.6;
-        }
-        
-        .loading {
-            text-align: center;
-            color: #666;
-            font-style: italic;
-        }
-        
-        .btn {
-            background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 10px 20px;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            margin: 5px;
-            transition: transform 0.2s;
-        }
-        
-        .btn:hover {
-            transform: translateY(-2px);
-        }
-        
-        .schedule-item {
-            background: #f8f9ff;
-            padding: 10px;
-            margin: 10px 0;
-            border-radius: 5px;
-            border-left: 4px solid #667eea;
-        }
-        
-        .log-entry {
-            font-family: 'Courier New', monospace;
-            font-size: 0.9em;
-            padding: 5px;
-            margin: 2px 0;
-            background: #f5f5f5;
-            border-radius: 3px;
-        }
-        
-        .success { color: #28a745; }
-        .warning { color: #ffc107; }
-        .error { color: #dc3545; }
-        .info { color: #17a2b8; }
-        
-        .refresh-btn {
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            width: 60px;
-            height: 60px;
-            border-radius: 50%;
-            background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            font-size: 1.5em;
-            cursor: pointer;
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
-            transition: transform 0.2s;
-        }
-        
-        .refresh-btn:hover {
-            transform: scale(1.1);
-        }
-    </style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>YouTube Automation Studio</title>
+  <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>🎬 Ethereal Dreamscript</h1>
-            <p>YouTube Automation Dashboard</p>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#overview" aria-label="YouTube Automation Studio home">
+        <span class="brand-mark">▶</span>
+        <span><strong id="brand-name">Automation Studio</strong><small>YouTube operator console</small></span>
+      </a>
+      <nav aria-label="Main navigation">
+        <button class="nav-item active" data-view="overview"><span>⌂</span> Overview</button>
+        <button class="nav-item" data-view="pipeline"><span>≋</span> Pipeline <b id="review-badge" class="badge hidden">0</b></button>
+        <button class="nav-item" data-view="calendar"><span>□</span> Calendar & ideas</button>
+        <button class="nav-item" data-view="analytics"><span>⌁</span> Analytics</button>
+        <button class="nav-item" data-view="settings"><span>⚙</span> Channel setup</button>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="system-pill"><i id="system-dot"></i><span id="system-label">Connecting…</span></div>
+        <button id="automation-toggle" class="button secondary full">Pause automation</button>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div>
+          <p class="eyebrow" id="view-eyebrow">OPERATOR OVERVIEW</p>
+          <h1 id="view-title">Know what happens next.</h1>
         </div>
-        
-        <div class="status-bar">
-            <div class="status-grid">
-                <div class="status-card">
-                    <h3 id="system-status">🟢</h3>
-                    <p>System Status</p>
-                </div>
-                <div class="status-card">
-                    <h3 id="content-count">-</h3>
-                    <p>Content Generated</p>
-                </div>
-                <div class="status-card">
-                    <h3 id="published-count">-</h3>
-                    <p>Videos Published</p>
-                </div>
-                <div class="status-card">
-                    <h3 id="next-generation">-</h3>
-                    <p>Next Generation</p>
-                </div>
-            </div>
-            <div style="text-align: center;">
-                <button class="btn" onclick="generateContent()">🎬 Generate Content Now</button>
-                <button class="btn" onclick="viewAnalytics()">📊 View Analytics</button>
-                <button class="btn" onclick="viewSchedule()">📅 View Schedule</button>
-            </div>
+        <div class="top-actions">
+          <button id="refresh-button" class="icon-button" title="Refresh dashboard" aria-label="Refresh dashboard">↻</button>
+          <button id="generate-button" class="button primary">＋ Create video</button>
         </div>
-        
-        <div class="dashboard-grid">
-            <div class="dashboard-card">
-                <h2>📈 System Overview</h2>
-                <div class="card-content">
-                    <div id="system-overview" class="loading">Loading system status...</div>
-                </div>
-            </div>
-            
-            <div class="dashboard-card">
-                <h2>📅 Upcoming Schedule</h2>
-                <div class="card-content">
-                    <div id="upcoming-schedule" class="loading">Loading schedule...</div>
-                </div>
-            </div>
-            
-            <div class="dashboard-card">
-                <h2>🎯 Content Strategy</h2>
-                <div class="card-content">
-                    <div id="content-strategy">
-                        <p><strong>Current Focus:</strong> Animated Storytelling</p>
-                        <p><strong>Target Audience:</strong> Creative individuals interested in storytelling and imagination</p>
-                        <p><strong>Content Types:</strong> Story-driven content, Explainers, Tutorials</p>
-                        <p><strong>Posting Frequency:</strong> Daily</p>
-                        <p><strong>Optimal Time:</strong> 2:00 PM</p>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="dashboard-card">
-                <h2>📊 Recent Activity</h2>
-                <div class="card-content">
-                    <div id="recent-activity" class="loading">Loading activity...</div>
-                </div>
-            </div>
-            
-            <div class="dashboard-card">
-                <h2>🤖 Agent Status</h2>
-                <div class="card-content">
-                    <div id="agent-status" class="loading">Loading agent status...</div>
-                </div>
-            </div>
-            
-            <div class="dashboard-card">
-                <h2>📈 Performance Metrics</h2>
-                <div class="card-content">
-                    <div id="performance-metrics" class="loading">Loading metrics...</div>
-                </div>
-            </div>
+      </header>
+
+      <div id="loading" class="loading-bar"></div>
+      <div id="toast" class="toast hidden" role="status"></div>
+
+      <section id="overview-view" class="view active">
+        <div id="setup-banner" class="setup-banner hidden"><div><strong>Finish setup to activate your agents</strong><p>The operator console is ready, but generation and publishing stay disabled until credentials are configured.</p></div><code>npm run walkthrough</code></div>
+        <div class="stats-grid">
+          <article class="stat"><span>Needs review</span><strong id="stat-review">—</strong><small>waiting for a decision</small></article>
+          <article class="stat"><span>Scheduled</span><strong id="stat-scheduled">—</strong><small>next 30 days</small></article>
+          <article class="stat"><span>Published</span><strong id="stat-published">—</strong><small>all time</small></article>
+          <article class="stat"><span>Average score</span><strong id="stat-score">—</strong><small>recent content performance</small></article>
         </div>
-    </div>
-    
-    <button class="refresh-btn" onclick="refreshDashboard()" title="Refresh Dashboard">
-        🔄
-    </button>
-    
-    <script>
-        // Dashboard functionality
-        async function loadDashboard() {
-            try {
-                // Load system health
-                const healthResponse = await fetch('/health');
-                const healthData = await healthResponse.json();
-                updateSystemStatus(healthData);
-                
-                // Load schedule
-                const scheduleResponse = await fetch('/schedule');
-                const scheduleData = await scheduleResponse.json();
-                updateSchedule(scheduleData);
-                
-                // Load analytics
-                try {
-                    const analyticsResponse = await fetch('/analytics');
-                    const analyticsData = await analyticsResponse.json();
-                    updateMetrics(analyticsData);
-                } catch (error) {
-                    console.log('Analytics not available yet');
-                }
-                
-            } catch (error) {
-                console.error('Dashboard load error:', error);
-                document.getElementById('system-status').textContent = '🔴';
-            }
-        }
-        
-        function updateSystemStatus(data) {
-            document.getElementById('system-status').textContent = data.status === 'healthy' ? '🟢' : '🔴';
-            
-            const overview = document.getElementById('system-overview');
-            overview.innerHTML = `
-                <p><strong>Status:</strong> ${data.initialized ? 'Initialized' : 'Initializing'}</p>
-                <p><strong>Agents Active:</strong> ${data.agents ? data.agents.length : 0}/7</p>
-                <p><strong>Uptime:</strong> ${formatUptime(data.uptime || 0)}</p>
-                <p><strong>Last Updated:</strong> ${new Date().toLocaleTimeString()}</p>
-            `;
-            
-            const agentStatus = document.getElementById('agent-status');
-            if (data.agents) {
-                agentStatus.innerHTML = data.agents.map(agent => 
-                    `<div class="schedule-item">✅ ${agent} Agent</div>`
-                ).join('');
-            }
-        }
-        
-        function updateSchedule(data) {
-            const schedule = document.getElementById('upcoming-schedule');
-            
-            if (data && data.length > 0) {
-                schedule.innerHTML = data.slice(0, 3).map(item => `
-                    <div class="schedule-item">
-                        <strong>${item.title || 'Content Generation'}</strong><br>
-                        <small>${new Date(item.publishTime || item.scheduledTime).toLocaleString()}</small>
-                    </div>
-                `).join('');
-                
-                // Update next generation time
-                const nextItem = data[0];
-                if (nextItem) {
-                    const nextTime = new Date(nextItem.publishTime || nextItem.scheduledTime);
-                    document.getElementById('next-generation').textContent = 
-                        nextTime.toLocaleDateString() === new Date().toLocaleDateString() 
-                            ? nextTime.toLocaleTimeString() 
-                            : 'Tomorrow';
-                }
-            } else {
-                schedule.innerHTML = `
-                    <div class="schedule-item">
-                        <strong>📅 Daily Content Generation</strong><br>
-                        <small>Scheduled for 6:00 AM daily</small>
-                    </div>
-                    <div class="schedule-item">
-                        <strong>📊 Analytics Collection</strong><br>
-                        <small>Scheduled for 9:00 AM daily</small>
-                    </div>
-                    <div class="schedule-item">
-                        <strong>🔧 Optimization Tasks</strong><br>
-                        <small>Scheduled for 10:00 PM daily</small>
-                    </div>
-                `;
-                document.getElementById('next-generation').textContent = '6:00 AM';
-            }
-        }
-        
-        function updateMetrics(data) {
-            const metrics = document.getElementById('performance-metrics');
-            if (data && data.totalVideos !== undefined) {
-                document.getElementById('content-count').textContent = data.totalVideos || '0';
-                document.getElementById('published-count').textContent = data.totalVideos || '0';
-                
-                metrics.innerHTML = `
-                    <p><strong>Average Performance:</strong> ${data.averagePerformanceScore || 'N/A'}</p>
-                    <p><strong>Total Content:</strong> ${data.totalVideos || 0}</p>
-                    <p><strong>System Health:</strong> Excellent</p>
-                `;
-            } else {
-                metrics.innerHTML = `
-                    <p><strong>Status:</strong> System just started</p>
-                    <p><strong>First Content:</strong> Will generate within 24 hours</p>
-                    <p><strong>Automation:</strong> Active and ready</p>
-                `;
-            }
-            
-            // Update activity log
-            const activity = document.getElementById('recent-activity');
-            activity.innerHTML = `
-                <div class="log-entry success">✅ System initialized successfully</div>
-                <div class="log-entry info">ℹ️ All 7 agents are active</div>
-                <div class="log-entry info">ℹ️ Content strategy loaded</div>
-                <div class="log-entry info">ℹ️ Automation scheduler started</div>
-                <div class="log-entry success">✅ Ready for content generation</div>
-            `;
-        }
-        
-        function formatUptime(seconds) {
-            const hours = Math.floor(seconds / 3600);
-            const minutes = Math.floor((seconds % 3600) / 60);
-            return `${hours}h ${minutes}m`;
-        }
-        
-        // API key handling for protected endpoints (API_KEY in .env)
-        function getStoredApiKey() {
-            return localStorage.getItem('yaa_api_key') || '';
-        }
 
-        function promptForApiKey() {
-            const key = prompt('This server requires an API key (the API_KEY value from your .env):', getStoredApiKey());
-            if (key === null) return null; // user cancelled
-            localStorage.setItem('yaa_api_key', key.trim());
-            return key.trim();
-        }
+        <div class="overview-grid">
+          <article class="panel review-panel">
+            <div class="panel-heading"><div><p class="eyebrow">DECISION QUEUE</p><h2>Ready for you</h2></div><button class="text-button" data-go="pipeline">View pipeline →</button></div>
+            <div id="review-list" class="card-list"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading"><div><p class="eyebrow">ACTIVE WORK</p><h2>Generation jobs</h2></div></div>
+            <div id="job-list" class="card-list compact"></div>
+          </article>
+        </div>
 
-        async function postWithApiKey(url, body) {
-            const doFetch = (key) => fetch(url, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    ...(key ? { 'x-api-key': key } : {})
-                },
-                body: JSON.stringify(body)
-            });
+        <div class="overview-grid lower">
+          <article class="panel">
+            <div class="panel-heading"><div><p class="eyebrow">UP NEXT</p><h2>Publishing calendar</h2></div><button class="text-button" data-go="calendar">Open calendar →</button></div>
+            <div id="next-schedule" class="timeline"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading"><div><p class="eyebrow">INBOX</p><h2>Recent activity</h2></div></div>
+            <div id="notification-list" class="activity-list"></div>
+          </article>
+        </div>
+      </section>
 
-            let response = await doFetch(getStoredApiKey());
-            if (response.status === 401) {
-                const key = promptForApiKey();
-                if (key !== null) {
-                    response = await doFetch(key);
-                }
-            }
-            return response;
-        }
+      <section id="pipeline-view" class="view">
+        <div class="section-intro"><div><h2>Content pipeline</h2><p>Every generated video, its real state, and the next available action.</p></div><select id="pipeline-filter"><option value="all">All content</option><option value="needs_review">Needs review</option><option value="needs_attention">Needs attention</option><option value="approved">Approved</option><option value="published">Published</option></select></div>
+        <div id="pipeline-list" class="pipeline-list"></div>
+      </section>
 
-        async function generateContent() {
-            if (!confirm('Generate content now? This will create a new video for your channel.')) {
-                return;
-            }
+      <section id="calendar-view" class="view">
+        <div class="split-heading"><div><h2>Calendar & idea backlog</h2><p>Shape the queue before generation starts.</p></div><button id="add-idea-button" class="button secondary">＋ Add idea</button></div>
+        <div class="calendar-grid">
+          <article class="panel"><div class="panel-heading"><div><p class="eyebrow">SCHEDULED</p><h2>Upcoming releases</h2></div></div><div id="calendar-list" class="calendar-list"></div></article>
+          <article class="panel"><div class="panel-heading"><div><p class="eyebrow">BACKLOG</p><h2>Content ideas</h2></div></div><div id="idea-list" class="idea-list"></div></article>
+        </div>
+      </section>
 
-            try {
-                const response = await postWithApiKey('/generate', { topic: null, style: 'story' });
-                const result = await response.json().catch(() => ({}));
+      <section id="analytics-view" class="view">
+        <div class="section-intro"><div><h2>Performance signals</h2><p>Data translated into decisions, not vanity metrics.</p></div></div>
+        <div class="stats-grid analytics-stats">
+          <article class="stat"><span>Analyzed videos</span><strong id="analytics-total">—</strong><small>last 30 days</small></article>
+          <article class="stat"><span>Performance score</span><strong id="analytics-score">—</strong><small>channel average</small></article>
+          <article class="stat wide"><span>Recommended action</span><strong id="analytics-action" class="recommendation">Collecting enough data to recommend a move.</strong></article>
+        </div>
+        <article class="panel"><div class="panel-heading"><div><p class="eyebrow">TOP PERFORMERS</p><h2>What is working</h2></div></div><div id="top-performers" class="card-list"></div></article>
+      </section>
 
-                if (!response.ok) {
-                    alert(`Content generation failed: ${result.error || response.statusText}`);
-                    return;
-                }
+      <section id="settings-view" class="view">
+        <div class="section-intro"><div><h2>Channel setup</h2><p>These guardrails guide every agent in the pipeline.</p></div></div>
+        <form id="profile-form" class="panel settings-form">
+          <div class="form-grid">
+            <label><span>Channel name</span><input name="channelName" maxlength="120" required></label>
+            <label><span>Default format</span><select name="defaultStyle"><option value="explainer">Explainer</option><option value="tutorial">Tutorial</option><option value="list">List</option><option value="review">Review</option><option value="story">Story</option></select></label>
+            <label class="full-row"><span>Channel goal</span><textarea name="goal" rows="2"></textarea></label>
+            <label class="full-row"><span>Target audience</span><textarea name="targetAudience" rows="2"></textarea></label>
+            <label><span>Brand voice</span><input name="brandVoice" placeholder="Clear, credible, engaging"></label>
+            <label><span>Timezone</span><input name="timezone" placeholder="America/Chicago"></label>
+            <label class="full-row"><span>Default call to action</span><input name="callToAction"></label>
+            <label class="full-row"><span>Visual direction</span><input name="visualStyle"></label>
+            <label class="full-row"><span>Blocked topics or terms</span><input name="bannedTopics" placeholder="term one, term two"><small>Quality review blocks content containing these terms.</small></label>
+          </div>
+          <div class="settings-row">
+            <label class="toggle"><input id="approval-required" type="checkbox"><span></span> Require approval before scheduling</label>
+            <label class="toggle"><input id="notifications-enabled" type="checkbox"><span></span> Save operator notifications</label>
+          </div>
+          <div class="form-actions"><button type="submit" class="button primary">Save channel setup</button><button id="api-key-button" type="button" class="button secondary">Set dashboard API key</button></div>
+        </form>
+      </section>
+    </main>
+  </div>
 
-                alert(`Content generation started! Title: ${result.result?.title || 'New Content'}`);
-                refreshDashboard();
-            } catch (error) {
-                alert('Content generation failed. Please try again.');
-            }
-        }
-        
-        function viewAnalytics() {
-            window.open('/analytics', '_blank');
-        }
-        
-        function viewSchedule() {
-            window.open('/schedule', '_blank');
-        }
-        
-        function refreshDashboard() {
-            loadDashboard();
-        }
-        
-        // Auto-refresh every 30 seconds
-        setInterval(refreshDashboard, 30000);
-        
-        // Load dashboard on page load
-        loadDashboard();
-    </script>
+  <dialog id="generate-dialog" class="dialog">
+    <form id="generate-form" method="dialog">
+      <div class="dialog-heading"><div><p class="eyebrow">NEW GENERATION JOB</p><h2>Create a video</h2></div><button type="button" class="close-button" data-close>×</button></div>
+      <label><span>Topic <small>optional—leave blank for agent selection</small></span><input name="topic" maxlength="200" placeholder="How small teams can automate repetitive work"></label>
+      <div class="form-grid two">
+        <label><span>Format</span><select name="style"><option value="explainer">Explainer</option><option value="tutorial">Tutorial</option><option value="list">List</option><option value="review">Review</option><option value="story">Story</option></select></label>
+        <label><span>Length</span><select name="length"><option value="short">Short · 2–4 min</option><option value="medium" selected>Medium · 8–12 min</option><option value="long">Long · 15–20 min</option></select></label>
+      </div>
+      <p class="callout">Generation runs in the background. You can follow each stage and cancel between stages.</p>
+      <div class="form-actions"><button type="submit" class="button primary">Start generation</button><button type="button" class="button ghost" data-close>Cancel</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="content-dialog" class="dialog content-dialog">
+    <div id="content-detail"></div>
+  </dialog>
+
+  <dialog id="idea-dialog" class="dialog">
+    <form id="idea-form" method="dialog">
+      <div class="dialog-heading"><div><p class="eyebrow">BACKLOG</p><h2>Add a content idea</h2></div><button type="button" class="close-button" data-close>×</button></div>
+      <label><span>Topic</span><input name="topic" maxlength="200" required></label>
+      <label><span>Angle</span><textarea name="angle" rows="3" placeholder="What makes this take distinctive?"></textarea></label>
+      <label><span>Why it is worth making</span><textarea name="rationale" rows="2"></textarea></label>
+      <label><span>Format</span><select name="style"><option value="explainer">Explainer</option><option value="tutorial">Tutorial</option><option value="list">List</option><option value="review">Review</option><option value="story">Story</option></select></label>
+      <div class="form-actions"><button type="submit" class="button primary">Add to backlog</button><button type="button" class="button ghost" data-close>Cancel</button></div>
+    </form>
+  </dialog>
+
+  <script src="/app.js" defer></script>
 </body>
 </html>

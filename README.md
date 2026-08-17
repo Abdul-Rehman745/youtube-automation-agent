@@ -1,5 +1,14 @@
 # YouTube Automation Agent
 
+## What's New in v2.5
+
+- **Operator-first dashboard** — live jobs, content pipeline, review queue, calendar, idea backlog, analytics, and channel setup in one responsive console
+- **Asynchronous generation** — generation returns immediately with a persistent job ID; progress, errors, cancellation, and restart interruptions are visible
+- **Approval-first publishing** — generated content must pass quality checks, factual review, media-rights confirmation, and human approval before it can be scheduled by default
+- **Review studio** — preview real video and thumbnail assets, edit title/description/tags/privacy/schedule, reject, retry, or approve
+- **Brand guardrails** — channel goal, audience, voice, CTA, visual direction, timezone, and blocked-topic policy guide generation and quality review
+- **Actionable operations** — pause/resume automation, webhook-ready notifications, real activity history, and warning-free linting
+
 ## What's New in v2.4
 
 - **Guided walkthrough for first-time setup** — `npm run walkthrough` (also offered when you run `npm run setup`). It explains every choice in plain English, shows exactly where to get each key (and opens the page in your browser), **live-tests keys the moment you paste them**, walks you click-by-click through Google Cloud for the YouTube connection, and signs you in via your browser instead of copy-pasting auth codes. Every step is skippable and progress is saved — re-run it any time.
@@ -228,11 +237,14 @@ The scheduler runs automatically after `npm start`. Content generation at 06:00,
 # health check
 curl http://localhost:3456/health
 
-# generate a video on demand (send x-api-key if API_KEY is set in .env)
+# queue a video-generation job (send x-api-key if API_KEY is set in .env)
 curl -X POST http://localhost:3456/generate \
   -H "Content-Type: application/json" \
   -H "x-api-key: $API_KEY" \
   -d '{"topic": "Top 10 Life Hacks", "style": "list"}'
+
+# inspect the returned background job
+curl http://localhost:3456/api/jobs/:jobId
 
 # view schedule
 curl http://localhost:3456/schedule
@@ -240,8 +252,12 @@ curl http://localhost:3456/schedule
 # get analytics
 curl http://localhost:3456/analytics
 
-# publish a specific content item
-curl -X POST http://localhost:3456/publish/:contentId
+# inspect, edit, and approve content before scheduling
+curl http://localhost:3456/api/content/:contentId
+curl -X POST http://localhost:3456/api/content/:contentId/approve \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $API_KEY" \
+  -d '{"privacyStatus":"private","factChecked":true,"rightsConfirmed":true}'
 ```
 
 ## Production Pipeline

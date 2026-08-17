@@ -25,10 +25,17 @@ module.exports = [
       globals: {
         __dirname: 'readonly',
         Buffer: 'readonly',
+        clearTimeout: 'readonly',
         clearInterval: 'readonly',
+        confirm: 'readonly',
         console: 'readonly',
+        fetch: 'readonly',
+        FormData: 'readonly',
+        localStorage: 'readonly',
+        location: 'readonly',
         module: 'readonly',
         process: 'readonly',
+        prompt: 'readonly',
         require: 'readonly',
         setInterval: 'readonly',
         setTimeout: 'readonly',
@@ -38,7 +45,11 @@ module.exports = [
       }
     },
     rules: {
-      'no-unused-vars': ['warn', { argsIgnorePattern: '^_' }]
+      'no-unused-vars': ['warn', {
+        argsIgnorePattern: '^_',
+        varsIgnorePattern: '^_',
+        caughtErrors: 'none'
+      }]
     }
   }
 ];

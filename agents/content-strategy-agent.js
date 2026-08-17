@@ -1,4 +1,3 @@
-const axios = require('axios');
 const { Logger } = require('../utils/logger');
 const { AITextService } = require('../utils/ai-text-service');
 

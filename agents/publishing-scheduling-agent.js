@@ -61,7 +61,8 @@ class PublishingSchedulingAgent {
           seo: productionData.seo,
           thumbnail: productionData.assets.thumbnail,
           video: productionData.assets.finalVideo,
-          captions: productionData.assets.captions
+          captions: productionData.assets.captions,
+          privacyStatus: productionData.privacyStatus || process.env.DEFAULT_PRIVACY_STATUS || 'private'
         },
         createdAt: new Date().toISOString()
       };
@@ -127,7 +128,7 @@ class PublishingSchedulingAgent {
         defaultAudioLanguage: metadata.seo.metadata.language
       },
       status: {
-        privacyStatus: process.env.DEFAULT_PRIVACY_STATUS || 'private',
+        privacyStatus: metadata.privacyStatus || process.env.DEFAULT_PRIVACY_STATUS || 'private',
         publishAt: scheduleEntry.publishTime,
         selfDeclaredMadeForKids: false
       }
@@ -281,9 +282,6 @@ class PublishingSchedulingAgent {
   async getChannelAnalytics() {
     try {
       // Get channel analytics for the last 30 days
-      const endDate = new Date();
-      const startDate = new Date(endDate.getTime() - (30 * 24 * 60 * 60 * 1000));
-      
       const response = await this.youtube.channels.list({
         part: 'statistics',
         mine: true

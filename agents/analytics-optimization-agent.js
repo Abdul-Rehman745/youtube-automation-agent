@@ -34,7 +34,16 @@ class AnalyticsOptimizationAgent {
     try {
       const history = await this.db.getAnalyticsHistory();
       history.forEach(record => {
-        this.performanceData.set(record.videoId, record);
+        const normalized = {
+          ...record,
+          videoId: record.videoId || record.video_id,
+          analyzedAt: record.analyzedAt || record.analyzed_at,
+          performance: record.performance || {
+            score: record.performance_score || 0,
+            grade: record.performance_grade || 'N/A'
+          }
+        };
+        this.performanceData.set(normalized.videoId, normalized);
       });
       this.logger.info(`Loaded ${this.performanceData.size} historical records`);
     } catch (error) {
@@ -621,7 +630,7 @@ class AnalyticsOptimizationAgent {
   }
 
   // Simulation methods for when API is not available
-  getSimulatedAnalytics(videoId) {
+  getSimulatedAnalytics(_videoId) {
     return {
       views: { totalViews: Math.floor(Math.random() * 50000), averageCTR: Math.random() * 10 },
       watchTime: { averageViewPercentage: Math.random() * 100 },

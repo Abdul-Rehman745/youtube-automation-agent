@@ -291,7 +291,7 @@ class ProductionManagementAgent {
     this.logger.info('Generating AI video content...');
     
     try {
-      const { strategy, script } = productionData;
+      const { script } = productionData;
       
       // Generate visual assets using DALL-E
       const visualPrompts = this.createVisualPromptsFromScript(script);
@@ -336,7 +336,7 @@ class ProductionManagementAgent {
     
     // Content sections
     if (script.mainContent && script.mainContent.sections) {
-      script.mainContent.sections.forEach((section, index) => {
+      script.mainContent.sections.forEach((section) => {
         // Section title
         elements.push({
           type: 'section_title',
@@ -413,7 +413,6 @@ class ProductionManagementAgent {
     this.logger.info('Generating AI audio narration...');
     
     try {
-      const { script } = productionData;
       const audioPath = path.join(__dirname, '..', 'data', 'audio', `${productionData.id}_narration.mp3`);
       
       // Read the TTS script
