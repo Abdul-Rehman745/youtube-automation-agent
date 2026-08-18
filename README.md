@@ -1,5 +1,9 @@
 # YouTube Automation Agent
 
+<p align="center">
+  <img src="assets/youtube-automation-agent.jpg" alt="YouTube Automation Agent mascot illustrating the AI-assisted content workflow" width="720">
+</p>
+
 ## What's New in v2.5
 
 - **Operator-first dashboard** — live jobs, content pipeline, review queue, calendar, idea backlog, analytics, and channel setup in one responsive console
