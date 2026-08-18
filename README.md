@@ -1,4 +1,4 @@
-# YouTube Automation Agent
+# Lumen YouTube Automation Agent
 
 <p align="center">
   <img src="assets/youtube-automation-agent.jpg" alt="YouTube Automation Agent mascot illustrating the AI-assisted content workflow" width="720">
