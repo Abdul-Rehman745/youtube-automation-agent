@@ -171,11 +171,11 @@ class CredentialManager {
         name: 'model',
         message: 'Select your preferred model:',
         choices: [
-          'gpt-5.5',
-          'gpt-5.5-instant',
-          'gpt-5.4'
+          'gpt-5.6',
+          'gpt-5.6-terra',
+          'gpt-5.6-luna'
         ],
-        default: 'gpt-5.5'
+        default: 'gpt-5.6'
       }
     ]);
 
@@ -240,13 +240,13 @@ class CredentialManager {
         name: 'model',
         message: 'Select default model:',
         choices: [
-          'openai/gpt-5.5',
+          'openai/gpt-5.6-sol',
           'anthropic/claude-opus-4-8',
           'google/gemini-3.5-flash',
-          'moonshotai/kimi-k2.6',
-          'zhipu/glm-5'
+          'moonshotai/kimi-k3',
+          'z-ai/glm-5.2'
         ],
-        default: 'openai/gpt-5.5'
+        default: 'openai/gpt-5.6-sol'
       }
     ]);
 
@@ -276,8 +276,8 @@ class CredentialManager {
         type: 'list',
         name: 'model',
         message: 'Select model:',
-        choices: ['kimi-k2.6', 'kimi-k2.5', 'moonshot-v1-auto'],
-        default: 'kimi-k2.6'
+        choices: ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6'],
+        default: 'kimi-k3'
       }
     ]);
 
@@ -338,8 +338,8 @@ class CredentialManager {
         type: 'list',
         name: 'model',
         message: 'Select model:',
-        choices: ['glm-5', 'glm-5.1'],
-        default: 'glm-5'
+        choices: ['glm-5.3', 'glm-5.2', 'glm-5.1'],
+        default: 'glm-5.3'
       }
     ]);
 
@@ -642,12 +642,12 @@ class CredentialManager {
         name: 'service',
         message: 'Select your preferred AI service:',
         choices: [
-          { name: 'OpenAI (GPT-5.5)', value: 'openai' },
+          { name: 'OpenAI (GPT-5.6)', value: 'openai' },
           { name: 'Google Gemini (Gemini 3.5 — free tier)', value: 'gemini' },
           { name: 'OpenRouter (300+ models, one API key)', value: 'openrouter' },
-          { name: 'Kimi (Moonshot AI — K2.6)', value: 'kimi' },
+          { name: 'Kimi (Moonshot AI — K3)', value: 'kimi' },
           { name: 'MiMo (Xiaomi — V2.5 Pro)', value: 'mimo' },
-          { name: 'GLM (Zhipu AI — GLM-5)', value: 'glm' },
+          { name: 'GLM (Zhipu AI — GLM-5.3)', value: 'glm' },
         ]
       }
     ]);

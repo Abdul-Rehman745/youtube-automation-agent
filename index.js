@@ -15,6 +15,8 @@ const { PublishingSchedulingAgent } = require('./agents/publishing-scheduling-ag
 const { AnalyticsOptimizationAgent } = require('./agents/analytics-optimization-agent');
 const { DailyAutomation } = require('./schedules/daily-automation');
 const { OperatorService } = require('./utils/operator-service');
+const { ActivationMetrics } = require('./utils/activation-metrics');
+const { AnonymousTelemetry } = require('./utils/anonymous-telemetry');
 const { version } = require('./package.json');
 const chalk = require('chalk');
 
@@ -28,6 +30,8 @@ class YouTubeAutomationAgent {
     this.isInitialized = false;
     this.activeJobs = new Map();
     this.operator = null;
+    this.activation = null;
+    this.telemetry = null;
     this.setupRequired = false;
   }
 
@@ -42,6 +46,8 @@ class YouTubeAutomationAgent {
       await this.db.initialize();
       await this.db.markInterruptedJobs();
       this.operator = new OperatorService(this.db);
+      this.activation = new ActivationMetrics(this.db);
+      this.telemetry = new AnonymousTelemetry(this.db, this.logger);
       
       // Load credentials
       this.logger.info('Loading credentials...');
@@ -63,7 +69,10 @@ class YouTubeAutomationAgent {
       await this.initializeAgents();
 
       // Show which pipeline stages will run for real vs. be simulated
-      await this.logCapabilitySummary();
+      const capabilities = await this.logCapabilitySummary();
+      if (capabilities.hasText && capabilities.hasFFmpeg && capabilities.hasUpload) {
+        await this.activation.markSetupReady(capabilities);
+      }
       
       // Setup API endpoints
       this.setupAPI();
@@ -144,6 +153,7 @@ class YouTubeAutomationAgent {
       this.logger.warn('FFmpeg is missing: no .mp4 files can be produced until it is installed.');
     }
     console.log('');
+    return { hasText, hasImages, hasTTS, hasFFmpeg, hasUpload };
   }
 
   requireAPIKey() {
@@ -307,7 +317,7 @@ class YouTubeAutomationAgent {
 
     this.app.get('/api/dashboard', async (_req, res) => {
       try {
-        const [stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics] = await Promise.all([
+        const [stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics, activation] = await Promise.all([
           this.db.getStats(),
           this.db.listGenerationJobs(20),
           this.db.getPipelineOverview(50),
@@ -319,10 +329,14 @@ class YouTubeAutomationAgent {
           this.db.listContentIdeas(),
           this.agents.analytics
             ? this.agents.analytics.getRecentAnalytics(30)
-            : Promise.resolve({ totalVideos: 0, averagePerformanceScore: 0, topPerformers: [], insights: [] })
+            : Promise.resolve({ totalVideos: 0, averagePerformanceScore: 0, topPerformers: [], insights: [] }),
+          this.activation
+            ? this.activation.getSummary()
+            : Promise.resolve({ privacy: 'local-only', counts: {}, milestones: {} })
         ]);
+        if (this.telemetry) void this.telemetry.sync(activation);
         res.json({
-          stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics,
+          stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics, activation,
           system: {
             initialized: this.isInitialized,
             setupRequired: this.setupRequired,

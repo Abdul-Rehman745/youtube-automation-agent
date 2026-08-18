@@ -5,22 +5,22 @@ const PROVIDERS = {
   openai: {
     name: 'OpenAI',
     baseURL: 'https://api.openai.com/v1',
-    defaultModel: 'gpt-5.5',
-    models: ['gpt-5.5', 'gpt-5.5-instant', 'gpt-5.4'],
+    defaultModel: 'gpt-5.6',
+    models: ['gpt-5.6', 'gpt-5.6-terra', 'gpt-5.6-luna'],
     envKey: 'OPENAI_API_KEY',
   },
   openrouter: {
     name: 'OpenRouter',
     baseURL: 'https://openrouter.ai/api/v1',
-    defaultModel: 'openai/gpt-5.5',
-    models: ['openai/gpt-5.5', 'anthropic/claude-opus-4-8', 'google/gemini-3.5-flash', 'moonshotai/kimi-k2.6', 'zhipu/glm-5'],
+    defaultModel: 'openai/gpt-5.6-sol',
+    models: ['openai/gpt-5.6-sol', 'anthropic/claude-opus-4-8', 'google/gemini-3.5-flash', 'moonshotai/kimi-k3', 'z-ai/glm-5.2'],
     envKey: 'OPENROUTER_API_KEY',
   },
   kimi: {
     name: 'Kimi (Moonshot AI)',
     baseURL: 'https://api.moonshot.ai/v1',
-    defaultModel: 'kimi-k2.6',
-    models: ['kimi-k2.6', 'kimi-k2.5', 'moonshot-v1-auto'],
+    defaultModel: 'kimi-k3',
+    models: ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6'],
     envKey: 'MOONSHOT_API_KEY',
   },
   mimo: {
@@ -33,8 +33,8 @@ const PROVIDERS = {
   glm: {
     name: 'GLM (Zhipu AI)',
     baseURL: 'https://api.z.ai/api/paas/v4/',
-    defaultModel: 'glm-5',
-    models: ['glm-5', 'glm-5.1'],
+    defaultModel: 'glm-5.3',
+    models: ['glm-5.3', 'glm-5.2', 'glm-5.1'],
     envKey: 'GLM_API_KEY',
   },
 };
@@ -99,10 +99,12 @@ class AITextService {
     const temperature = options.temperature ?? 0.7;
 
     if (this.gemini) {
+      const config = { maxOutputTokens: maxTokens };
+      if (!/^gemini-3\.[56]-/.test(model)) config.temperature = temperature;
       const response = await this.gemini.models.generateContent({
         model,
         contents: prompt,
-        config: { maxOutputTokens: maxTokens, temperature },
+        config,
       });
       const text = response && response.text;
       if (typeof text !== 'string' || !text.trim()) {

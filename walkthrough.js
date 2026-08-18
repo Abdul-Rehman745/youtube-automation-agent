@@ -13,7 +13,7 @@ const { checkFFmpeg, ffmpegInstallHint } = require('./utils/ffmpeg');
 // Everything a beginner needs to know about each provider, in one place
 const AI_PROVIDER_GUIDE = {
   gemini: {
-    label: 'Google Gemini — FREE tier, no credit card (recommended for beginners)',
+    label: 'Google Gemini — free text/TTS tiers; paid AI images',
     keyUrl: 'https://aistudio.google.com/apikey',
     keyHint: 'starts with "AIza"',
     instructions: [
@@ -23,14 +23,14 @@ const AI_PROVIDER_GUIDE = {
     ],
     models: ['gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-2.5-pro'],
     defaultModel: 'gemini-3.5-flash',
-    covers: 'scripts + images + voice narration (full free pipeline)',
+    covers: 'scripts + voice narration on supported free tiers; AI images require paid access',
     save(credentials, apiKey, model) {
       credentials.gemini = { apiKey, model };
     },
     validationCreds: (apiKey, model) => ({ gemini: { apiKey, model } })
   },
   openai: {
-    label: 'OpenAI — paid (~$0.05–0.20/video), premium image + voice quality',
+    label: 'OpenAI — paid text, image, and voice models',
     keyUrl: 'https://platform.openai.com/api-keys',
     keyHint: 'starts with "sk-"',
     instructions: [
@@ -38,8 +38,8 @@ const AI_PROVIDER_GUIDE = {
       'Click "Create new secret key"',
       'Copy the key — it is shown only once'
     ],
-    models: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4'],
-    defaultModel: 'gpt-5.5',
+    models: ['gpt-5.6', 'gpt-5.6-terra', 'gpt-5.6-luna'],
+    defaultModel: 'gpt-5.6',
     covers: 'scripts + images + voice narration',
     save(credentials, apiKey, model) {
       credentials.openai = { apiKey, model };
@@ -54,7 +54,7 @@ const AI_PROVIDER_GUIDE = {
       'Sign in and add a few dollars of credit',
       'Create a key and copy it'
     ],
-    models: ['openai/gpt-5.5', 'anthropic/claude-opus-4-8', 'google/gemini-3.5-flash', 'moonshotai/kimi-k2.6', 'zhipu/glm-5'],
+    models: ['openai/gpt-5.6-sol', 'anthropic/claude-opus-4-8', 'google/gemini-3.5-flash', 'moonshotai/kimi-k3', 'z-ai/glm-5.2'],
     defaultModel: 'google/gemini-3.5-flash',
     covers: 'scripts only (add a Gemini or OpenAI key for images/voice)',
     save(credentials, apiKey, model) {
@@ -63,12 +63,12 @@ const AI_PROVIDER_GUIDE = {
     validationCreds: (apiKey, model) => ({ aiProvider: { provider: 'openrouter', apiKey, model } })
   },
   kimi: {
-    label: 'Kimi (Moonshot AI) — very cheap, strong quality',
+    label: 'Kimi (Moonshot AI) — K3 and K2 family text models',
     keyUrl: 'https://platform.kimi.ai',
     keyHint: 'from the Moonshot platform console',
     instructions: ['Create an account', 'Open the API keys page and create a key'],
-    models: ['kimi-k2.6', 'kimi-k2.5', 'moonshot-v1-auto'],
-    defaultModel: 'kimi-k2.6',
+    models: ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6'],
+    defaultModel: 'kimi-k3',
     covers: 'scripts only (add a Gemini or OpenAI key for images/voice)',
     save(credentials, apiKey, model) {
       credentials.aiProvider = { provider: 'kimi', apiKey, model };
@@ -89,12 +89,12 @@ const AI_PROVIDER_GUIDE = {
     validationCreds: (apiKey, model) => ({ aiProvider: { provider: 'mimo', apiKey, model } })
   },
   glm: {
-    label: 'GLM (Zhipu AI) — ~$1/M input tokens',
+    label: 'GLM (Zhipu AI) — GLM-5 family text models',
     keyUrl: 'https://z.ai',
     keyHint: 'from the Z.ai console',
     instructions: ['Create an account', 'Create an API key in the console'],
-    models: ['glm-5', 'glm-5.1'],
-    defaultModel: 'glm-5',
+    models: ['glm-5.3', 'glm-5.2', 'glm-5.1'],
+    defaultModel: 'glm-5.3',
     covers: 'scripts only (add a Gemini or OpenAI key for images/voice)',
     save(credentials, apiKey, model) {
       credentials.aiProvider = { provider: 'glm', apiKey, model };
@@ -210,8 +210,8 @@ class SetupWalkthrough {
       if (!redo) return;
     } else {
       console.log(chalk.white('The agent needs one AI service. If you don\'t want to spend money,'));
-      console.log(chalk.white('pick Google Gemini — its free tier covers the whole pipeline:'));
-      console.log(chalk.white('scripts, images, and voice narration.'));
+      console.log(chalk.white('Google Gemini offers free tiers for supported text and TTS usage.'));
+      console.log(chalk.white('AI image generation requires paid access; gradient visuals are the fallback.'));
     }
 
     const { providerId } = await inquirer.prompt([{

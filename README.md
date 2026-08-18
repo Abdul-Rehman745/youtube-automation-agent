@@ -1,73 +1,57 @@
-# Lumen YouTube Automation Agent - B9eEkNbyYN9DekUup97vjSk7UGsqh6NBSHNN6sd8pump
+# Lumen
 
-<p align="center">
-  <img src="assets/youtube-automation-agent.jpg" alt="YouTube Automation Agent mascot illustrating the AI-assisted content workflow" width="720">
-</p>
+**The open-source AI agent that runs a YouTube channel end to end.**
 
-## What's New in v2.5
+Research topics → write scripts → generate narration and visuals → assemble videos → optimize metadata → review → schedule → publish → learn from analytics.
 
-- **Operator-first dashboard** — live jobs, content pipeline, review queue, calendar, idea backlog, analytics, and channel setup in one responsive console
-- **Asynchronous generation** — generation returns immediately with a persistent job ID; progress, errors, cancellation, and restart interruptions are visible
-- **Approval-first publishing** — generated content must pass quality checks, factual review, media-rights confirmation, and human approval before it can be scheduled by default
-- **Review studio** — preview real video and thumbnail assets, edit title/description/tags/privacy/schedule, reject, retry, or approve
-- **Brand guardrails** — channel goal, audience, voice, CTA, visual direction, timezone, and blocked-topic policy guide generation and quality review
-- **Actionable operations** — pause/resume automation, webhook-ready notifications, real activity history, and warning-free linting
+[![CI](https://github.com/darkzOGx/youtube-automation-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/darkzOGx/youtube-automation-agent/actions/workflows/ci.yml)
+[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node.js 18+](https://img.shields.io/badge/node-18%2B-43853d.svg)](package.json)
 
-## What's New in v2.4
+- **Self-hosted:** your credentials, media, and channel data stay under your control.
+- **Approval-first:** nothing is scheduled until quality, rights, and human-review gates pass by default.
+- **Provider-flexible:** use Gemini, OpenAI, OpenRouter, Kimi, MiMo, GLM, or another OpenAI-compatible endpoint.
+- **Observable:** follow persistent generation jobs, failures, review state, publishing, and local activation milestones from the dashboard.
 
-- **Guided walkthrough for first-time setup** — `npm run walkthrough` (also offered when you run `npm run setup`). It explains every choice in plain English, shows exactly where to get each key (and opens the page in your browser), **live-tests keys the moment you paste them**, walks you click-by-click through Google Cloud for the YouTube connection, and signs you in via your browser instead of copy-pasting auth codes. Every step is skippable and progress is saved — re-run it any time.
-- **`.env` files actually work now** — `dotenv` was a dependency but was never loaded, so `.env` settings (API keys, `API_KEY`, `FFMPEG_PATH`…) were silently ignored unless exported in your shell. `index.js` and the setup tools now load `.env` on start.
-- **`.env.example` no longer poisons setup** — the uncommented `OPENAI_API_KEY=your-openai-api-key-here` placeholder would have been picked up as a real key; all placeholders are now commented out.
-- **Browser OAuth opens automatically** — the YouTube authorization URL now opens in your default browser.
+<!-- Launch gate: add only a real 30–45 second dashboard demo captured from a verified end-to-end run. -->
 
-## What's New in v2.3
+## Quick start
 
-- **Full free-tier pipeline with Gemini** — image generation (`gemini-3.1-flash-image`) and native voice narration (`gemini-3.1-flash-tts-preview`) now run on your Gemini key. A Gemini-only setup produces complete narrated videos end to end; OpenAI/ElevenLabs are used first when configured. Models and voice are configurable via `GEMINI_IMAGE_MODEL`, `GEMINI_TTS_MODEL`, `GEMINI_TTS_VOICE`. (Thanks to PR #6 for demonstrating the demand and fallback-chain direction.)
-- **~50× faster slideshow rendering** — instead of screenshotting a headless browser at 30fps (~10 minutes for a 30-second video), the renderer captures one still per slide and lets FFmpeg build the video with crossfades (seconds).
-- **No more junk template topics** — template mode (no AI key) previously scraped single keywords from trending titles and produced videos like "crown: The Complete Guide". It now uses a curated evergreen topic list and only accepts trending topics that read like real subjects.
-- **Model catalog corrections** — replaced the nonexistent `gemini-3.5-pro` picker entry with `gemini-3.1-pro-preview` / `gemini-2.5-pro` (verified against Google's current model list).
+```bash
+git clone https://github.com/darkzOGx/youtube-automation-agent.git
+cd youtube-automation-agent
+npm install
+npm run walkthrough
+npm start
+```
 
-## What's New in v2.2
+Open `http://localhost:3456`. The walkthrough explains each provider choice, tests credentials, and guides YouTube authorization.
 
-This release resolves every open GitHub issue (#1, #2, #3, #4, #8, #9, #13):
+Already know what you are doing? `npm run setup` offers a shorter classic flow, and `.env.example` documents every setting.
 
-- **Gemini (and every other provider) now passes credential validation** — startup and setup no longer demand an OpenAI key. Any one configured AI provider (OpenAI, Gemini, OpenRouter, Kimi, MiMo, or GLM) is enough. (#3, #9)
-- **FFmpeg is bundled** — `npm install` now pulls a prebuilt FFmpeg binary via `ffmpeg-static`, so `'ffmpeg' is not recognized` is gone. A system install on your PATH or `FFMPEG_PATH` in `.env` still takes precedence. (#1)
-- **Generated content actually reaches the publish queue** — the `/generate` pipeline previously produced a video and then never scheduled it, so "Processing publish queue" ran forever with nothing to do. It now queues every successful production. (#2)
-- **Real .mp4 output without paid keys** — if TTS isn't configured, the slideshow renders as a silent video instead of dying on a placeholder file. Placeholder `.info` assets are filtered out of slides. (#4)
-- **No more silent failures** — a capability check at startup shows exactly which pipeline stages will run for real (✓) vs. what's missing and how to fix it (✗). Productions that only produced placeholders are marked `simulated`, are never scheduled for upload, and log a loud warning. (#4, #8, #13)
-- **Setup wizard no longer hard-aborts** — missing credentials or FFmpeg produce warnings with fix instructions instead of `❌ Setup failed!`. (#9)
-- **Publish-queue logging is informative** — shows how many items are waiting and when the next publish happens, instead of an identical line every 15 minutes. (#2)
+### What you need
 
-## What's New in v2.1
+- Node.js 18+
+- A Google account and YouTube Data API credentials
+- At least one AI text provider key
+- FFmpeg, installed automatically through `ffmpeg-static`
 
-- **Real AI generation wired in** — the Content Strategy, Script Writer, and SEO agents now call your configured AI provider (OpenAI, OpenRouter, Kimi, MiMo, GLM, or Gemini) for topics, scripts, titles, descriptions, and tags. If no provider key is set, they fall back to the built-in templates so the pipeline still runs.
-- **API protection** — set `API_KEY` in `.env` and the mutating endpoints (`POST /generate`, `POST /publish/:id`) require a matching `x-api-key` header. Request bodies are validated and size-limited.
-- **Safer publishing** — default privacy is now `private` (set `DEFAULT_PRIVACY_STATUS=public` to opt in), and the uploader streams the real video file — it refuses to upload placeholder assets from simulated runs.
-- **Startup and scheduler fixes** — added the missing `sharp` dependency (the app previously crashed on boot), created the missing `automation_events` table (every scheduled task previously threw on logging), fixed the double-insert in the content pipeline, and fixed the publish-queue removal.
-- **No more fabricated statistics** — template scripts no longer invent numbers like "90% of people…".
-- **Cleaner repo** — removed two dead OAuth flows (`authenticate.js`, `simple-auth.js` used Google's long-deprecated OOB flow), dead dependencies (`cron`, `jimp`), broken npm scripts, and committed build artifacts. Added ESLint (`npm run lint`) and GitHub Actions CI.
+Gemini offers free access for supported text and TTS usage. Gemini AI image generation currently requires paid-tier access; without an image provider, Lumen can assemble gradient-based visuals instead.
 
-## What's New in v2.0
+## From idea to published video
 
-- **Model upgrades across the board** — GPT-5.5 / GPT-5.5 Instant replace GPT-4-turbo, GPT Image 2 replaces DALL-E 3, Gemini 3.5 Flash/Pro replace Gemini 1.x, ElevenLabs Eleven v3 replaces v1, Wan 2.7 replaces Stable Video Diffusion
-- **OpenAI SDK v6** — upgraded from v4, along with `@google/genai` v2.9, `replicate` v1.4, `googleapis` v173
-- **Revamped setup wizard** — new TTS service picker (OpenAI TTS / ElevenLabs / Azure), ElevenLabs credential setup, updated model selection menus
-- **Fixed deprecated API patterns** — OpenAI v3 SDK calls in credential testing replaced with v4+ patterns
-- **Dynamic year in content strategy** — no more hardcoded "2025" in trend analysis prompts
-- **README rewrite** — developer-focused docs with Mermaid architecture diagrams, no fluff
+| Stage | What Lumen does | What you control |
+| --- | --- | --- |
+| Research | Finds topics and builds a content strategy | Niche, audience, blocked topics |
+| Script | Writes the hook, narrative, CTA, and metadata | Voice, format, length, brand direction |
+| Production | Generates narration and visuals, then assembles a real MP4 | Provider choice and media fallbacks |
+| Review | Runs quality checks and opens the video in Review Studio | Facts, media rights, edits, approval |
+| Publish | Schedules and uploads approved content | Privacy, timing, final decision |
+| Learn | Pulls performance signals into the next strategy cycle | Automation and optimization settings |
 
----
+Lumen distinguishes real MP4 output from simulated placeholders. Simulated output cannot enter the approval or publishing path.
 
-Fully automated YouTube channel management system. AI agents handle content strategy, scriptwriting, thumbnail generation, SEO, publishing, and analytics — end to end, on a daily schedule.
-
-## Built by
-
-[@darkzOGx](https://github.com/darkzOGx). Solo builder shipping AI automation and developer tools.
-
-Find me on [X](https://x.com/darkzOGx) and [laderalabs.io](https://laderalabs.io).
-
-If this saves you time, a star helps it reach more developers.
+For release history, see [CHANGELOG.md](CHANGELOG.md).
 
 ## Architecture
 
@@ -104,11 +88,11 @@ All OpenAI-compatible providers work out of the box — the system auto-configur
 ```mermaid
 graph LR
     subgraph Direct
-        OA[OpenAI<br/>GPT-5.5]
-        GM[Gemini<br/>3.5 Flash/Pro]
-        KM[Kimi<br/>K2.6]
+        OA[OpenAI<br/>GPT-5.6 family]
+        GM[Gemini<br/>3.5 Flash / 3.1 Pro]
+        KM[Kimi<br/>K3]
         MM[MiMo<br/>V2.5 Pro]
-        GL[GLM<br/>GLM-5]
+        GL[GLM<br/>GLM-5.3]
     end
     subgraph Router
         OR[OpenRouter<br/>300+ models]
@@ -119,36 +103,14 @@ graph LR
 
 | Provider | Models | Base URL | Cost |
 |----------|--------|----------|------|
-| **OpenAI** | GPT-5.5, GPT-5.5 Instant | `api.openai.com/v1` | ~$0.05–0.20/video |
-| **OpenRouter** | 300+ (GPT, Claude, Gemini, Kimi, GLM, etc.) | `openrouter.ai/api/v1` | varies by model |
-| **Google Gemini** | Gemini 3.5 Flash, 3.5 Pro | via `@google/genai` SDK | free tier available |
-| **Kimi (Moonshot AI)** | Kimi K2.6, K2.5 | `api.moonshot.ai/v1` | ~80% cheaper than GPT-5.5 |
-| **MiMo (Xiaomi)** | MiMo V2.5 Pro, V2.5 | `api.xiaomimimo.com/v1` | competitive |
-| **GLM (Zhipu AI)** | GLM-5, GLM-5.1 | `api.z.ai/api/paas/v4/` | ~$1/M input tokens |
+| **OpenAI** | GPT-5.6 Sol, Terra, Luna | `api.openai.com/v1` | provider pricing |
+| **OpenRouter** | 300+ models; curated defaults are validated against its live catalog | `openrouter.ai/api/v1` | varies by model |
+| **Google Gemini** | Gemini 3.5 Flash, 3.1 Pro Preview, 2.5 Pro | via `@google/genai` SDK | free tiers vary by model and modality |
+| **Kimi (Moonshot AI)** | Kimi K3, K2.7 Code, K2.6 | `api.moonshot.ai/v1` | provider pricing |
+| **MiMo (Xiaomi)** | MiMo V2.5 Pro, V2.5 | `api.xiaomimimo.com/v1` | provider pricing |
+| **GLM (Zhipu AI)** | GLM-5.3, 5.2, 5.1 | `api.z.ai/api/paas/v4/` | provider pricing |
 
 Additional integrations: Anthropic Claude (`claude-opus-4-8`), ElevenLabs (Eleven v3 TTS), Replicate (Wan 2.7 video), local models via Ollama, any OpenAI-compatible endpoint.
-
-## Quick Start
-
-```bash
-git clone https://github.com/darkzOGx/youtube-automation-agent.git
-cd youtube-automation-agent
-npm install
-npm run walkthrough   # guided first-time setup: explains everything, tests your keys live
-npm start
-```
-
-Dashboard runs at `http://localhost:3456`.
-
-Already know what you're doing? `npm run setup` offers a classic quick mode, and `.env.example` documents every setting.
-
-### Prerequisites
-
-- Node.js 18+
-- FFmpeg — bundled automatically via `ffmpeg-static` on `npm install`; a system install on your PATH or an `FFMPEG_PATH` env var takes precedence
-- Google account (YouTube Data API — free)
-- At least one AI provider key (OpenAI, Gemini, OpenRouter, Kimi, MiMo, or GLM) — without one, agents fall back to template-based generation
-- Images and narration come from your AI key: OpenAI **or Gemini** both cover image generation and TTS (ElevenLabs / Azure Speech optional for premium voices) — with no media provider at all you get gradient slides and silent video
 
 ## Configuration
 
@@ -212,7 +174,17 @@ DEFAULT_PRIVACY_STATUS=private
 
 # Optional: protect mutating API routes (POST /generate, /publish)
 # API_KEY=some-long-random-string
+
+# Optional anonymous activation milestones (off by default; HTTPS endpoint required)
+# ANONYMOUS_TELEMETRY_ENABLED=false
+# ANONYMOUS_TELEMETRY_ENDPOINT=https://your-collector.example/events
 ```
+
+### Activation measurement and privacy
+
+The dashboard calculates setup, first-real-MP4, approval, publication, and repeat-generation milestones locally from SQLite and files on disk. A video counts only when a non-simulated `.mp4` with an MP4 container signature still exists.
+
+Anonymous milestone reporting is disabled by default and has no built-in collector. It activates only when you explicitly set both telemetry variables. The allowlisted payload contains the milestone name and time, Lumen version, OS family, Node major version, and a random installation ID. It never includes credentials, channel data, prompts, topics, titles, filenames, or video contents.
 
 ## Automation Schedule
 
@@ -370,6 +342,12 @@ If this was useful, check out:
 - [open-sales-researcher](https://github.com/darkzOGx/open-sales-researcher): autonomous B2B company research. Works with Claude Code, Cursor, Copilot.
 - [darkzseo](https://github.com/darkzOGx/darkzseo): SEO tooling
 
+## Built by
+
+[@darkzOGx](https://github.com/darkzOGx), a solo builder shipping AI automation and developer tools. Find me on [X](https://x.com/darkzOGx) and [laderalabs.io](https://laderalabs.io).
+
+If Lumen saves you time, a star helps it reach more developers.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for ground rules (short version: one focused concern per PR, no lockfile churn, lint + tests must pass). For questions and setup help, use [Discussions](https://github.com/darkzOGx/youtube-automation-agent/discussions) — Issues is for bugs.
@@ -395,10 +373,11 @@ MIT — see [LICENSE](LICENSE).
 
 - [OpenAI](https://openai.com/) — GPT-5.6 Sol, GPT Image 2, GPT-4o-mini-tts
 - [OpenRouter](https://openrouter.ai/) — unified multi-model API
-- [Google](https://ai.google.dev/) — YouTube Data API, Gemini 3.6 Flash
+- [Google](https://ai.google.dev/) — Gemini 3.5 Flash, Gemini 3.1 Flash Image, Gemini 3.1 Flash TTS
+- [Google Cloud](https://console.cloud.google.com/) — YouTube Data API
 - [Moonshot AI](https://www.moonshot.ai/) — Kimi K3
 - [Xiaomi](https://mimo.mi.com/) — MiMo V2.5 Pro
-- [Zhipu AI](https://z.ai/) — GLM-5.2
+- [Zhipu AI](https://z.ai/) — GLM-5.3
 - [ElevenLabs](https://elevenlabs.io/) — Eleven v3 TTS
 - [Replicate](https://replicate.com/) — Wan 2.7 video generation
 - [ConstructionBids.ai](https://constructionbids.ai) - AI scans every federal, state & local public works bid and matches you to contracts you'll win.

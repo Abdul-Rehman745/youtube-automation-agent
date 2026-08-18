@@ -18,6 +18,8 @@ class SystemTest {
       { name: 'Database Connection', test: () => this.testDatabase() },
       { name: 'Production Persistence', test: () => this.testProductionPersistence() },
       { name: 'Automation Events Table', test: () => this.testAutomationEventsTable() },
+      { name: 'Local Activation Metrics', test: () => this.testActivationMetrics() },
+      { name: 'Anonymous Telemetry Opt-in', test: () => this.testAnonymousTelemetryOptIn() },
       { name: 'Operator Workflow API', test: () => this.testOperatorWorkflowAPI() },
       { name: 'API Validation and Security', test: () => this.testAPIValidationAndSecurity() },
       { name: 'Publishing Safety', test: () => this.testPublishingSafety() },
@@ -149,6 +151,91 @@ class SystemTest {
     this.logger.info('Automation events table test completed successfully');
   }
 
+  async testActivationMetrics() {
+    const fs = require('fs').promises;
+    const { ActivationMetrics } = require('./utils/activation-metrics');
+    const db = new Database();
+    await db.initialize();
+    const id = `activation_test_${Date.now()}`;
+    const videoPath = path.join(__dirname, 'temp', `${id}.mp4`);
+    const mp4Header = Buffer.from([
+      0x00, 0x00, 0x00, 0x18,
+      0x66, 0x74, 0x79, 0x70,
+      0x69, 0x73, 0x6f, 0x6d
+    ]);
+
+    try {
+      await fs.mkdir(path.dirname(videoPath), { recursive: true });
+      await fs.writeFile(videoPath, mp4Header);
+      await db.saveProductionData({
+        id,
+        status: 'ready',
+        assets: { finalVideo: { path: videoPath, simulated: false } },
+        timeline: { readyForUpload: new Date().toISOString() },
+        scheduledPublishTime: null,
+        priority: 1,
+        estimatedDuration: '0:01'
+      });
+
+      const activation = new ActivationMetrics(db);
+      const summary = await activation.getSummary();
+      if (!summary.milestones.firstRealVideo.achieved || summary.counts.realVideos < 1) {
+        throw new Error('A verified non-simulated MP4 was not counted as activation');
+      }
+
+      await fs.writeFile(videoPath, Buffer.from('renamed-but-not-an-mp4'));
+      const invalidContainerSummary = await activation.getSummary();
+      if (invalidContainerSummary.counts.realVideos >= summary.counts.realVideos) {
+        throw new Error('A file with an .mp4 extension but no MP4 signature was counted as activation');
+      }
+
+      await fs.writeFile(videoPath, mp4Header);
+      await db.updateProductionData({
+        id,
+        status: 'simulated',
+        assets: { finalVideo: { path: videoPath, simulated: true } },
+        timeline: {},
+        scheduledPublishTime: null,
+        priority: 1
+      });
+      const simulatedSummary = await activation.getSummary();
+      if (simulatedSummary.counts.realVideos >= summary.counts.realVideos) {
+        throw new Error('A simulated MP4 was incorrectly counted as activation');
+      }
+    } finally {
+      await db.executeQuery('DELETE FROM productions WHERE id = ?', [id]);
+      await fs.unlink(videoPath).catch(() => {});
+      await db.close();
+    }
+
+    this.logger.info('Local activation metrics test completed successfully');
+  }
+
+  async testAnonymousTelemetryOptIn() {
+    const { AnonymousTelemetry } = require('./utils/anonymous-telemetry');
+    const savedEnabled = process.env.ANONYMOUS_TELEMETRY_ENABLED;
+    const savedEndpoint = process.env.ANONYMOUS_TELEMETRY_ENDPOINT;
+    const db = new Database();
+    await db.initialize();
+    try {
+      delete process.env.ANONYMOUS_TELEMETRY_ENABLED;
+      delete process.env.ANONYMOUS_TELEMETRY_ENDPOINT;
+      const telemetry = new AnonymousTelemetry(db, this.logger);
+      if (telemetry.configuration().enabled) throw new Error('Anonymous telemetry was enabled without opt-in');
+
+      process.env.ANONYMOUS_TELEMETRY_ENABLED = 'true';
+      process.env.ANONYMOUS_TELEMETRY_ENDPOINT = 'http://example.com/events';
+      if (telemetry.configuration().enabled) throw new Error('Anonymous telemetry accepted a non-HTTPS endpoint');
+    } finally {
+      if (savedEnabled === undefined) delete process.env.ANONYMOUS_TELEMETRY_ENABLED;
+      else process.env.ANONYMOUS_TELEMETRY_ENABLED = savedEnabled;
+      if (savedEndpoint === undefined) delete process.env.ANONYMOUS_TELEMETRY_ENDPOINT;
+      else process.env.ANONYMOUS_TELEMETRY_ENDPOINT = savedEndpoint;
+      await db.close();
+    }
+    this.logger.info('Anonymous telemetry opt-in test completed successfully');
+  }
+
   async testOperatorWorkflowAPI() {
     const { YouTubeAutomationAgent } = require('./index');
     const { OperatorService } = require('./utils/operator-service');
@@ -196,7 +283,12 @@ class SystemTest {
       const { port } = server.address();
       const response = await fetch(`http://127.0.0.1:${port}/api/dashboard`);
       const dashboard = await response.json();
-      if (!response.ok || !Array.isArray(dashboard.jobs) || !Array.isArray(dashboard.pipeline)) {
+      if (
+        !response.ok ||
+        !Array.isArray(dashboard.jobs) ||
+        !Array.isArray(dashboard.pipeline) ||
+        dashboard.activation?.privacy !== 'local-only'
+      ) {
         throw new Error('Operator dashboard API did not return its data contract');
       }
     } finally {
@@ -396,7 +488,7 @@ class SystemTest {
     delete process.env.OPENAI_API_KEY;
     try {
       const service = new AITextService({
-        aiProvider: { provider: 'openai', apiKey: 'test-key', model: 'gpt-5.5' }
+        aiProvider: { provider: 'openai', apiKey: 'test-key', model: 'gpt-5.6' }
       });
 
       // Newer OpenAI models (gpt-5.x) reject max_tokens — the request must use

@@ -136,6 +136,7 @@ function renderDashboard() {
   renderCalendar(state.schedule);
   renderIdeas(state.ideas);
   renderAnalytics(state.analytics);
+  renderActivation(state.activation);
   populateSettings(state.profile, state.settings);
 }
 
@@ -263,6 +264,31 @@ function renderAnalytics(analytics) {
   const performers = Array.isArray(analytics.topPerformers) ? analytics.topPerformers : [];
   $('#top-performers').innerHTML = performers.length ? performers.map(item => `
     <article class="performer-card"><strong>${escapeHTML(item.videoDetails?.title || item.title || 'Untitled video')}</strong><div class="meta-line">Performance ${escapeHTML(item.performance?.score ?? item.performance_score ?? '—')} / 100</div></article>`).join('') : empty('No analyzed videos yet.');
+}
+
+function renderActivation(activation = {}) {
+  const container = $('#activation-list');
+  if (!container) return;
+  const milestones = activation.milestones || {};
+  const rows = [
+    ['Setup ready', milestones.setupReady],
+    ['First real MP4', milestones.firstRealVideo],
+    ['First approval', milestones.firstApproval],
+    ['First YouTube publish', milestones.firstPublish],
+    ['Second real MP4', milestones.secondRealVideo]
+  ];
+  container.innerHTML = rows.map(([name, milestone = {}]) => `
+    <div class="timeline-item">
+      <div class="timeline-dot ${milestone.achieved ? 'done' : ''}"></div>
+      <div><strong>${escapeHTML(name)}</strong><div class="meta-line">${milestone.achieved ? escapeHTML(formatDate(milestone.at)) : 'Not reached yet'}</div></div>
+    </div>`).join('');
+  if (milestones.firstRealVideo?.achieved) {
+    container.insertAdjacentHTML('beforeend', `
+      <div class="activation-share">
+        <span>Made something real with Lumen?</span>
+        <a class="button secondary small" href="https://github.com/darkzOGx/youtube-automation-agent/discussions/new?category=show-and-tell" target="_blank" rel="noreferrer">Share what you built</a>
+      </div>`);
+  }
 }
 
 function populateSettings(profile = {}, settings = {}) {
