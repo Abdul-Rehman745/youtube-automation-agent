@@ -4,6 +4,7 @@ const { google } = require('googleapis');
 const inquirer = require('inquirer');
 const chalk = require('chalk');
 const { Logger } = require('./logger');
+const { PROVIDERS, GEMINI_MODELS, GEMINI_DEFAULT_MODEL } = require('./ai-text-service');
 
 class CredentialManager {
   constructor() {
@@ -170,12 +171,8 @@ class CredentialManager {
         type: 'list',
         name: 'model',
         message: 'Select your preferred model:',
-        choices: [
-          'gpt-5.6',
-          'gpt-5.6-terra',
-          'gpt-5.6-luna'
-        ],
-        default: 'gpt-5.6'
+        choices: [...PROVIDERS.openai.models],
+        default: PROVIDERS.openai.defaultModel
       }
     ]);
 
@@ -204,12 +201,8 @@ class CredentialManager {
         type: 'list',
         name: 'model',
         message: 'Select your preferred Gemini model:',
-        choices: [
-          'gemini-3.5-flash',
-          'gemini-3.1-pro-preview',
-          'gemini-2.5-pro'
-        ],
-        default: 'gemini-3.5-flash'
+        choices: [...GEMINI_MODELS],
+        default: GEMINI_DEFAULT_MODEL
       }
     ]);
 
@@ -226,7 +219,7 @@ class CredentialManager {
   async setupOpenRouterCredentials() {
     console.log(chalk.cyan('\nOpenRouter Setup'));
     console.log(chalk.gray('Get your API key from: https://openrouter.ai/keys'));
-    console.log(chalk.gray('One key gives access to 300+ models (OpenAI, Claude, Gemini, Kimi, GLM, etc.)'));
+    console.log(chalk.gray('One key gives access to 400+ models (OpenAI, Claude, Gemini, Kimi, GLM, etc.)'));
 
     const answers = await inquirer.prompt([
       {
@@ -239,14 +232,8 @@ class CredentialManager {
         type: 'list',
         name: 'model',
         message: 'Select default model:',
-        choices: [
-          'openai/gpt-5.6-sol',
-          'anthropic/claude-opus-4-8',
-          'google/gemini-3.5-flash',
-          'moonshotai/kimi-k3',
-          'z-ai/glm-5.2'
-        ],
-        default: 'openai/gpt-5.6-sol'
+        choices: [...PROVIDERS.openrouter.models],
+        default: PROVIDERS.openrouter.defaultModel
       }
     ]);
 
@@ -276,8 +263,8 @@ class CredentialManager {
         type: 'list',
         name: 'model',
         message: 'Select model:',
-        choices: ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6'],
-        default: 'kimi-k3'
+        choices: [...PROVIDERS.kimi.models],
+        default: PROVIDERS.kimi.defaultModel
       }
     ]);
 
@@ -307,8 +294,8 @@ class CredentialManager {
         type: 'list',
         name: 'model',
         message: 'Select model:',
-        choices: ['mimo-v2.5-pro', 'mimo-v2.5'],
-        default: 'mimo-v2.5-pro'
+        choices: [...PROVIDERS.mimo.models],
+        default: PROVIDERS.mimo.defaultModel
       }
     ]);
 
@@ -338,8 +325,8 @@ class CredentialManager {
         type: 'list',
         name: 'model',
         message: 'Select model:',
-        choices: ['glm-5.3', 'glm-5.2', 'glm-5.1'],
-        default: 'glm-5.3'
+        choices: [...PROVIDERS.glm.models],
+        default: PROVIDERS.glm.defaultModel
       }
     ]);
 
@@ -525,7 +512,6 @@ class CredentialManager {
     }
 
     // Environment-variable based configuration (see utils/ai-text-service.js)
-    const { PROVIDERS } = require('./ai-text-service');
     const envKeys = [...Object.values(PROVIDERS).map(p => p.envKey), 'GEMINI_API_KEY'];
     return envKeys.some(key => process.env[key]);
   }
@@ -643,8 +629,8 @@ class CredentialManager {
         message: 'Select your preferred AI service:',
         choices: [
           { name: 'OpenAI (GPT-5.6)', value: 'openai' },
-          { name: 'Google Gemini (Gemini 3.5 — free tier)', value: 'gemini' },
-          { name: 'OpenRouter (300+ models, one API key)', value: 'openrouter' },
+          { name: 'Google Gemini (Gemini 3.7)', value: 'gemini' },
+          { name: 'OpenRouter (400+ models, one API key)', value: 'openrouter' },
           { name: 'Kimi (Moonshot AI — K3)', value: 'kimi' },
           { name: 'MiMo (Xiaomi — V2.5 Pro)', value: 'mimo' },
           { name: 'GLM (Zhipu AI — GLM-5.3)', value: 'glm' },

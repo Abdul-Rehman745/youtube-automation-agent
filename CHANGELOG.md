@@ -6,7 +6,7 @@
 - Added an explicit opt-in anonymous milestone reporter with no default endpoint
 - Added reproducible GitHub growth baselines and public fork census reports
 - Reworked the README around product outcomes and moved release history here
-- Synchronized the in-repo provider catalog with current official model IDs and corrected Gemini free-tier claims
+- Refreshed active provider defaults and selectors for Gemini 3.7 Flash, Claude Fable 5, and the current OpenRouter catalog
 
 ## v2.5
 

@@ -6,7 +6,12 @@ const fs = require('fs').promises;
 const path = require('path');
 const { exec } = require('child_process');
 const { CredentialManager } = require('./utils/credential-manager');
-const { AITextService, PROVIDERS } = require('./utils/ai-text-service');
+const {
+  AITextService,
+  PROVIDERS,
+  GEMINI_MODELS,
+  GEMINI_DEFAULT_MODEL
+} = require('./utils/ai-text-service');
 const { Database } = require('./database/db');
 const { checkFFmpeg, ffmpegInstallHint } = require('./utils/ffmpeg');
 
@@ -21,8 +26,8 @@ const AI_PROVIDER_GUIDE = {
       'Click "Create API key"',
       'Copy the key it shows you'
     ],
-    models: ['gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-2.5-pro'],
-    defaultModel: 'gemini-3.5-flash',
+    models: [...GEMINI_MODELS],
+    defaultModel: GEMINI_DEFAULT_MODEL,
     covers: 'scripts + voice narration on supported free tiers; AI images require paid access',
     save(credentials, apiKey, model) {
       credentials.gemini = { apiKey, model };
@@ -38,8 +43,8 @@ const AI_PROVIDER_GUIDE = {
       'Click "Create new secret key"',
       'Copy the key — it is shown only once'
     ],
-    models: ['gpt-5.6', 'gpt-5.6-terra', 'gpt-5.6-luna'],
-    defaultModel: 'gpt-5.6',
+    models: [...PROVIDERS.openai.models],
+    defaultModel: PROVIDERS.openai.defaultModel,
     covers: 'scripts + images + voice narration',
     save(credentials, apiKey, model) {
       credentials.openai = { apiKey, model };
@@ -47,15 +52,15 @@ const AI_PROVIDER_GUIDE = {
     validationCreds: (apiKey, model) => ({ aiProvider: { provider: 'openai', apiKey, model } })
   },
   openrouter: {
-    label: 'OpenRouter — one key, 300+ models (pay per use)',
+    label: 'OpenRouter — one key, 400+ models (pay per use)',
     keyUrl: 'https://openrouter.ai/keys',
     keyHint: 'starts with "sk-or-"',
     instructions: [
       'Sign in and add a few dollars of credit',
       'Create a key and copy it'
     ],
-    models: ['openai/gpt-5.6-sol', 'anthropic/claude-opus-4-8', 'google/gemini-3.5-flash', 'moonshotai/kimi-k3', 'z-ai/glm-5.2'],
-    defaultModel: 'google/gemini-3.5-flash',
+    models: [...PROVIDERS.openrouter.models],
+    defaultModel: 'google/gemini-3.7-flash',
     covers: 'scripts only (add a Gemini or OpenAI key for images/voice)',
     save(credentials, apiKey, model) {
       credentials.aiProvider = { provider: 'openrouter', apiKey, model };
@@ -67,8 +72,8 @@ const AI_PROVIDER_GUIDE = {
     keyUrl: 'https://platform.kimi.ai',
     keyHint: 'from the Moonshot platform console',
     instructions: ['Create an account', 'Open the API keys page and create a key'],
-    models: ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6'],
-    defaultModel: 'kimi-k3',
+    models: [...PROVIDERS.kimi.models],
+    defaultModel: PROVIDERS.kimi.defaultModel,
     covers: 'scripts only (add a Gemini or OpenAI key for images/voice)',
     save(credentials, apiKey, model) {
       credentials.aiProvider = { provider: 'kimi', apiKey, model };
@@ -80,8 +85,8 @@ const AI_PROVIDER_GUIDE = {
     keyUrl: 'https://mimo.mi.com',
     keyHint: 'from the MiMo console',
     instructions: ['Create an account', 'Create an API key in the console'],
-    models: ['mimo-v2.5-pro', 'mimo-v2.5'],
-    defaultModel: 'mimo-v2.5-pro',
+    models: [...PROVIDERS.mimo.models],
+    defaultModel: PROVIDERS.mimo.defaultModel,
     covers: 'scripts only (add a Gemini or OpenAI key for images/voice)',
     save(credentials, apiKey, model) {
       credentials.aiProvider = { provider: 'mimo', apiKey, model };
@@ -93,8 +98,8 @@ const AI_PROVIDER_GUIDE = {
     keyUrl: 'https://z.ai',
     keyHint: 'from the Z.ai console',
     instructions: ['Create an account', 'Create an API key in the console'],
-    models: ['glm-5.3', 'glm-5.2', 'glm-5.1'],
-    defaultModel: 'glm-5.3',
+    models: [...PROVIDERS.glm.models],
+    defaultModel: PROVIDERS.glm.defaultModel,
     covers: 'scripts only (add a Gemini or OpenAI key for images/voice)',
     save(credentials, apiKey, model) {
       credentials.aiProvider = { provider: 'glm', apiKey, model };

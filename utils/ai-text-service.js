@@ -1,6 +1,13 @@
 const OpenAI = require('openai');
 const { Logger } = require('./logger');
 
+const GEMINI_MODELS = [
+  'gemini-3.7-flash',
+  'gemini-3.1-pro-preview',
+  'gemini-3.5-flash-lite',
+];
+const GEMINI_DEFAULT_MODEL = GEMINI_MODELS[0];
+
 const PROVIDERS = {
   openai: {
     name: 'OpenAI',
@@ -13,7 +20,7 @@ const PROVIDERS = {
     name: 'OpenRouter',
     baseURL: 'https://openrouter.ai/api/v1',
     defaultModel: 'openai/gpt-5.6-sol',
-    models: ['openai/gpt-5.6-sol', 'anthropic/claude-opus-4-8', 'google/gemini-3.5-flash', 'moonshotai/kimi-k3', 'z-ai/glm-5.2'],
+    models: ['openai/gpt-5.6-sol', 'anthropic/claude-fable-5', 'google/gemini-3.7-flash', 'moonshotai/kimi-k3', 'z-ai/glm-5.3'],
     envKey: 'OPENROUTER_API_KEY',
   },
   kimi: {
@@ -85,7 +92,7 @@ class AITextService {
     try {
       const { GoogleGenAI } = require('@google/genai');
       this.gemini = new GoogleGenAI({ apiKey });
-      this.model = model || 'gemini-3.5-flash';
+      this.model = model || GEMINI_DEFAULT_MODEL;
       this.providerName = 'Google Gemini';
       this.logger.info(`Gemini initialized (model: ${this.model})`);
     } catch (error) {
@@ -100,7 +107,7 @@ class AITextService {
 
     if (this.gemini) {
       const config = { maxOutputTokens: maxTokens };
-      if (!/^gemini-3\.[56]-/.test(model)) config.temperature = temperature;
+      if (!/^gemini-3\.(?:[5-9]|\d{2,})-/.test(model)) config.temperature = temperature;
       const response = await this.gemini.models.generateContent({
         model,
         contents: prompt,
@@ -175,4 +182,4 @@ class AITextService {
   }
 }
 
-module.exports = { AITextService, PROVIDERS };
+module.exports = { AITextService, PROVIDERS, GEMINI_MODELS, GEMINI_DEFAULT_MODEL };

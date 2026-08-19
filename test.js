@@ -536,6 +536,28 @@ class SystemTest {
       if (!emptyRejected) {
         throw new Error('Empty response was not rejected with a descriptive error');
       }
+
+      // Gemini 3.5+ rejects/deprecates sampling parameters. Keep the latest
+      // Gemini default on the parameter-safe request path.
+      const geminiCalls = [];
+      const geminiService = Object.create(AITextService.prototype);
+      geminiService.gemini = {
+        models: {
+          generateContent: async (params) => {
+            geminiCalls.push(params);
+            return { text: 'gemini-ok' };
+          }
+        }
+      };
+      geminiService.client = null;
+      geminiService.model = 'gemini-3.7-flash';
+      geminiService.providerName = 'Google Gemini';
+
+      const geminiResult = await geminiService.generateText('gemini prompt', { temperature: 0.2 });
+      if (geminiResult !== 'gemini-ok') throw new Error('Gemini generation did not return content');
+      if (geminiCalls[0].config.temperature !== undefined) {
+        throw new Error('Gemini 3.7 must not receive the deprecated temperature parameter');
+      }
     } finally {
       if (savedEnv === undefined) delete process.env.OPENAI_API_KEY;
       else process.env.OPENAI_API_KEY = savedEnv;
@@ -710,7 +732,7 @@ class SystemTest {
 
   async testWalkthroughModule() {
     const { SetupWalkthrough, AI_PROVIDER_GUIDE } = require('./walkthrough');
-    const { PROVIDERS } = require('./utils/ai-text-service');
+    const { PROVIDERS, GEMINI_MODELS, GEMINI_DEFAULT_MODEL } = require('./utils/ai-text-service');
 
     const walkthrough = new SetupWalkthrough();
     if (typeof walkthrough.run !== 'function') {
@@ -753,6 +775,30 @@ class SystemTest {
           }
         }
       }
+    }
+
+    if (
+      JSON.stringify(AI_PROVIDER_GUIDE.gemini.models) !== JSON.stringify(GEMINI_MODELS) ||
+      AI_PROVIDER_GUIDE.gemini.defaultModel !== GEMINI_DEFAULT_MODEL
+    ) {
+      throw new Error('Walkthrough Gemini models drifted from the runtime catalog');
+    }
+
+    for (const id of Object.keys(PROVIDERS)) {
+      if (JSON.stringify(AI_PROVIDER_GUIDE[id].models) !== JSON.stringify(PROVIDERS[id].models)) {
+        throw new Error(`Walkthrough provider "${id}" models drifted from the runtime catalog`);
+      }
+    }
+
+    const currentOpenRouterModels = [
+      'openai/gpt-5.6-sol',
+      'anthropic/claude-fable-5',
+      'google/gemini-3.7-flash',
+      'moonshotai/kimi-k3',
+      'z-ai/glm-5.3'
+    ];
+    if (JSON.stringify(PROVIDERS.openrouter.models) !== JSON.stringify(currentOpenRouterModels)) {
+      throw new Error('OpenRouter curated models are not the verified current catalog');
     }
 
     this.logger.info('Walkthrough module test completed successfully');

@@ -89,13 +89,13 @@ All OpenAI-compatible providers work out of the box — the system auto-configur
 graph LR
     subgraph Direct
         OA[OpenAI<br/>GPT-5.6 family]
-        GM[Gemini<br/>3.5 Flash / 3.1 Pro]
+        GM[Gemini<br/>3.7 Flash / 3.1 Pro]
         KM[Kimi<br/>K3]
         MM[MiMo<br/>V2.5 Pro]
         GL[GLM<br/>GLM-5.3]
     end
     subgraph Router
-        OR[OpenRouter<br/>300+ models]
+        OR[OpenRouter<br/>400+ models]
     end
     Direct --> YAA[YouTube Automation Agent]
     Router --> YAA
@@ -104,13 +104,13 @@ graph LR
 | Provider | Models | Base URL | Cost |
 |----------|--------|----------|------|
 | **OpenAI** | GPT-5.6 Sol, Terra, Luna | `api.openai.com/v1` | provider pricing |
-| **OpenRouter** | 300+ models; curated defaults are validated against its live catalog | `openrouter.ai/api/v1` | varies by model |
-| **Google Gemini** | Gemini 3.5 Flash, 3.1 Pro Preview, 2.5 Pro | via `@google/genai` SDK | free tiers vary by model and modality |
+| **OpenRouter** | 400+ models; curated defaults are validated against its live catalog | `openrouter.ai/api/v1` | varies by model |
+| **Google Gemini** | Gemini 3.7 Flash, 3.1 Pro Preview, 3.5 Flash-Lite | via `@google/genai` SDK | free tiers vary by model and modality |
 | **Kimi (Moonshot AI)** | Kimi K3, K2.7 Code, K2.6 | `api.moonshot.ai/v1` | provider pricing |
 | **MiMo (Xiaomi)** | MiMo V2.5 Pro, V2.5 | `api.xiaomimimo.com/v1` | provider pricing |
 | **GLM (Zhipu AI)** | GLM-5.3, 5.2, 5.1 | `api.z.ai/api/paas/v4/` | provider pricing |
 
-Additional integrations: Anthropic Claude (`claude-opus-4-8`), ElevenLabs (Eleven v3 TTS), Replicate (Wan 2.7 video), local models via Ollama, any OpenAI-compatible endpoint.
+Additional integrations: Anthropic Claude (`claude-fable-5`), ElevenLabs (Eleven v3 TTS), Replicate (Wan 2.7 video), local models via Ollama, any OpenAI-compatible endpoint.
 
 ## Configuration
 
@@ -279,7 +279,7 @@ class ClaudeAIService {
   }
   async generateContent(prompt) {
     const message = await this.client.messages.create({
-      model: 'claude-opus-4-8',
+      model: 'claude-fable-5',
       max_tokens: 1024,
       messages: [{ role: 'user', content: prompt }]
     });
@@ -373,7 +373,7 @@ MIT — see [LICENSE](LICENSE).
 
 - [OpenAI](https://openai.com/) — GPT-5.6 Sol, GPT Image 2, GPT-4o-mini-tts
 - [OpenRouter](https://openrouter.ai/) — unified multi-model API
-- [Google](https://ai.google.dev/) — Gemini 3.5 Flash, Gemini 3.1 Flash Image, Gemini 3.1 Flash TTS
+- [Google](https://ai.google.dev/) — Gemini 3.7 Flash, Gemini 3.1 Flash Image, Gemini 3.1 Flash TTS
 - [Google Cloud](https://console.cloud.google.com/) — YouTube Data API
 - [Moonshot AI](https://www.moonshot.ai/) — Kimi K3
 - [Xiaomi](https://mimo.mi.com/) — MiMo V2.5 Pro
