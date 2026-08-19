@@ -1,4 +1,4 @@
-# Lumen
+# YouTube Automation Agent
 
 **The open-source AI agent that runs a YouTube channel end to end.**
 
