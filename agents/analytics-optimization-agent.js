@@ -1,5 +1,6 @@
 const { google } = require('googleapis');
 const { Logger } = require('../utils/logger');
+const { ChannelLearningEngine } = require('../utils/channel-learning-engine');
 
 class AnalyticsOptimizationAgent {
   constructor(db, credentials) {
@@ -9,6 +10,7 @@ class AnalyticsOptimizationAgent {
     this.youtubeAnalytics = null;
     this.youtube = null;
     this.performanceData = new Map();
+    this.learning = new ChannelLearningEngine(db);
   }
 
   async initialize() {
@@ -51,18 +53,21 @@ class AnalyticsOptimizationAgent {
     }
   }
 
-  async analyzeVideoPerformance(videoId) {
+  async analyzeVideoPerformance(videoId, options = {}) {
     try {
       this.logger.info(`Analyzing performance for video: ${videoId}`);
       
       // Get video details
       const videoDetails = await this.getVideoDetails(videoId);
       
+      const measurementWindow = options.measurementWindow || 'rolling';
+      const period = this.learning.measurementPeriod(videoDetails.publishedAt, measurementWindow);
+
       // Get analytics data
-      const analytics = await this.getVideoAnalytics(videoId);
+      const analytics = await this.getVideoAnalytics(videoId, period);
       
       // Analyze thumbnail performance
-      const thumbnailMetrics = await this.analyzeThumbnailPerformance(videoId);
+      const thumbnailMetrics = await this.analyzeThumbnailPerformance(videoId, period);
       
       // Analyze title and SEO performance
       const seoMetrics = await this.analyzeSEOPerformance(videoDetails, analytics);
@@ -78,6 +83,7 @@ class AnalyticsOptimizationAgent {
         seoMetrics,
         insights,
         performance: this.calculatePerformanceScore(analytics),
+        measurementWindow,
         analyzedAt: new Date().toISOString()
       };
       
@@ -86,6 +92,12 @@ class AnalyticsOptimizationAgent {
       
       // Save to database
       await this.db.saveAnalyticsReport(performanceReport);
+      const context = await this.db.getPublishedContentContext(videoId);
+      performanceReport.learningSnapshot = await this.learning.capture(
+        performanceReport,
+        context,
+        measurementWindow
+      );
       
       this.logger.info(`Analysis complete. Performance score: ${performanceReport.performance.score}/100`);
       return performanceReport;
@@ -121,9 +133,9 @@ class AnalyticsOptimizationAgent {
     };
   }
 
-  async getVideoAnalytics(videoId) {
-    const endDate = new Date().toISOString().split('T')[0];
-    const startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  async getVideoAnalytics(videoId, period = null) {
+    const endDate = period?.endDate || new Date().toISOString().split('T')[0];
+    const startDate = period?.startDate || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     
     try {
       // Get various analytics metrics
@@ -142,6 +154,7 @@ class AnalyticsOptimizationAgent {
       ]);
       
       return {
+        simulated: false,
         period: { startDate, endDate },
         views: viewsData,
         watchTime: watchTimeData,
@@ -291,13 +304,13 @@ class AnalyticsOptimizationAgent {
     };
   }
 
-  async analyzeThumbnailPerformance(videoId) {
+  async analyzeThumbnailPerformance(videoId, period = null) {
     // Analyze thumbnail click-through rate and impressions
     try {
       const response = await this.youtubeAnalytics.reports.query({
         ids: 'channel==MINE',
-        startDate: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-        endDate: new Date().toISOString().split('T')[0],
+        startDate: period?.startDate || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+        endDate: period?.endDate || new Date().toISOString().split('T')[0],
         metrics: 'impressions,impressionClickThroughRate',
         filters: `video==${videoId}`
       });
@@ -632,6 +645,7 @@ class AnalyticsOptimizationAgent {
   // Simulation methods for when API is not available
   getSimulatedAnalytics(_videoId) {
     return {
+      simulated: true,
       views: { totalViews: Math.floor(Math.random() * 50000), averageCTR: Math.random() * 10 },
       watchTime: { averageViewPercentage: Math.random() * 100 },
       engagement: { engagementRate: Math.random() * 10 },
@@ -685,6 +699,14 @@ class AnalyticsOptimizationAgent {
       topPerformers: recentReports.slice(0, 5),
       insights: this.generateChannelInsights(recentReports)
     };
+  }
+
+  getLearningSummary() {
+    return this.learning.getSummary();
+  }
+
+  getDueMeasurementWindows(video) {
+    return this.learning.getDueMeasurementWindows(video);
   }
 
   calculateAverageScore(reports) {

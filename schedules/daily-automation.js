@@ -242,20 +242,22 @@ class DailyAutomation {
     try {
       this.logger.info('Starting daily analytics collection...');
       
-      // Get recently published videos
-      const recentVideos = await this.getRecentlyPublishedVideos(7);
+      // Keep a 30-day catch-up window so new installs can backfill 24-hour and 7-day evidence.
+      const recentVideos = await this.getRecentlyPublishedVideos(30);
       
       let processedCount = 0;
       
       for (const video of recentVideos) {
         try {
-          await this.agents.analytics.analyzeVideoPerformance(video.youtube_id);
-          processedCount++;
-          
-          this.logger.info(`Analyzed video: ${video.title}`);
-          
-          // Small delay to avoid API rate limits
-          await this.sleep(2000);
+          const windows = await this.agents.analytics.getDueMeasurementWindows(video);
+          for (const measurementWindow of windows) {
+            await this.agents.analytics.analyzeVideoPerformance(video.youtube_id, { measurementWindow });
+            processedCount++;
+            this.logger.info(`Captured ${measurementWindow} learning evidence for: ${video.title}`);
+
+            // Small delay to avoid API rate limits
+            await this.sleep(2000);
+          }
         } catch (error) {
           this.logger.error(`Failed to analyze video ${video.youtube_id}:`, error);
         }

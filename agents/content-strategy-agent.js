@@ -263,6 +263,9 @@ class ContentStrategyAgent {
     const recentRows = await this.db.getAllRows(
       "SELECT topic, created_at FROM content_strategies WHERE created_at >= datetime('now', '-90 days') ORDER BY created_at DESC LIMIT 50"
     );
+    const approvedLearnings = this.db.listLearningRecommendations
+      ? await this.db.listLearningRecommendations({ status: 'approved', limit: 10 })
+      : [];
     const signals = this.trendingTopics.slice(0, 15).map(item => ({
       topic: item.topic,
       score: Number(item.score || 0),
@@ -272,14 +275,21 @@ class ContentStrategyAgent {
     const researchSources = [
       ...(signalSources.has('trending') ? ['YouTube most-popular videos'] : []),
       ...(signalSources.has('competitor') ? ['Configured competitor channels'] : []),
-      ...(recentRows.length ? ['Channel content history'] : [])
+      ...(recentRows.length ? ['Channel content history'] : []),
+      ...(approvedLearnings.length ? ['Operator-approved channel performance learnings'] : [])
     ];
     const research = {
       generatedAt: new Date().toISOString(),
       sources: researchSources.length ? researchSources : ['No usable live signals returned; evergreen strategy fallback'],
       signals,
       recentTopics: recentRows.map(row => row.topic),
-      competitorChannelsAnalyzed: this.competitorData.length
+      competitorChannelsAnalyzed: this.competitorData.length,
+      approvedLearnings: approvedLearnings.map(item => ({
+        title: item.title,
+        rationale: item.rationale,
+        confidence: item.confidence,
+        proposedChange: item.proposedChange
+      }))
     };
 
     let plan = await this.generateAutonomousPlanWithAI(channelStrategy, research, targetCount);
@@ -309,8 +319,9 @@ Success metric: ${channelStrategy.success_metric || 'not specified'}
 Constraints: ${channelStrategy.constraints || 'none'}
 Research signals: ${JSON.stringify(research.signals)}
 Recent topics to avoid repeating: ${JSON.stringify(research.recentTopics)}
+Operator-approved performance learnings to apply: ${JSON.stringify(research.approvedLearnings)}
 
-Do not invent trend data, statistics, sources, or factual claims. Prefer evergreen topics when the supplied signals are weak.`;
+Do not invent trend data, statistics, sources, or factual claims. Apply only the supplied approved learnings; pending or rejected recommendations are not authorized. Prefer evergreen topics when the supplied signals are weak.`;
 
     try {
       const response = await this.aiTextService.generateText(prompt, { maxTokens: 1800, temperature: 0.65 });
@@ -336,7 +347,9 @@ Do not invent trend data, statistics, sources, or factual claims. Prefer evergre
       angle: `${topic} through the lens of ${channelStrategy.value_proposition || channelStrategy.objective}`,
       rationale: readableSignals.includes(topic)
         ? 'Matches a current YouTube or configured competitor signal and fits the channel strategy.'
-        : 'Builds an evergreen topic from the channel strategy when live research signals are limited.',
+        : research.approvedLearnings.length
+          ? `Builds an evergreen topic from the channel strategy while applying approved learning: ${research.approvedLearnings[0].title}.`
+          : 'Builds an evergreen topic from the channel strategy when live research signals are limited.',
       format: index === 0 ? channelStrategy.default_format : ['explainer', 'tutorial', 'list'][index % 3],
       length: channelStrategy.default_length
     }));

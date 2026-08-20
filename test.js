@@ -22,6 +22,7 @@ class SystemTest {
       { name: 'Anonymous Telemetry Opt-in', test: () => this.testAnonymousTelemetryOptIn() },
       { name: 'Operator Workflow API', test: () => this.testOperatorWorkflowAPI() },
       { name: 'Autonomous Channel Operator', test: () => this.testAutonomousChannelOperator() },
+      { name: 'Closed-loop Channel Learning', test: () => this.testChannelLearningLoop() },
       { name: 'API Validation and Security', test: () => this.testAPIValidationAndSecurity() },
       { name: 'Publishing Safety', test: () => this.testPublishingSafety() },
       { name: 'Multi-Provider Credential Validation', test: () => this.testCredentialValidation() },
@@ -244,6 +245,7 @@ class SystemTest {
     await db.initialize();
     let server;
     let job;
+    let learningRecommendation;
 
     try {
       job = await db.createGenerationJob({ topic: 'Operator workflow test', style: 'explainer', length: 'short' });
@@ -254,6 +256,7 @@ class SystemTest {
       }
 
       const operator = new OperatorService(db);
+      operator.notify = async () => null;
       const quality = await operator.runQualityChecks({
         script: { title: 'Test title', fullScript: 'x'.repeat(250) },
         seo: { title: 'Test title', description: 'x'.repeat(80), tags: ['one', 'two', 'three'] },
@@ -301,9 +304,28 @@ class SystemTest {
       if (unavailableStart.status !== 503) {
         throw new Error('Autonomous operator did not fail closed when its strategy agent was unavailable');
       }
+
+      learningRecommendation = await db.saveLearningRecommendation({
+        fingerprint: `operator-api-${Date.now()}`,
+        category: 'format',
+        title: 'Test evidence-backed recommendation',
+        rationale: 'Created only for API contract verification.',
+        evidence: { sampleSize: 4 },
+        proposedChange: { target: 'future_plans', prefer: 'tutorial' },
+        confidence: 'medium'
+      });
+      const approveLearning = await fetch(
+        `http://127.0.0.1:${port}/api/learning/recommendations/${learningRecommendation.id}/approve`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }
+      );
+      const approvedLearning = await approveLearning.json();
+      if (!approveLearning.ok || approvedLearning.result?.status !== 'approved') {
+        throw new Error('Learning recommendation review API did not persist approval');
+      }
     } finally {
       if (server) await new Promise(resolve => server.close(resolve));
       if (job) await db.executeQuery('DELETE FROM generation_jobs WHERE id = ?', [job.id]);
+      if (learningRecommendation) await db.executeQuery('DELETE FROM learning_recommendations WHERE id = ?', [learningRecommendation.id]);
       await db.close();
     }
 
@@ -399,6 +421,118 @@ class SystemTest {
     }
 
     this.logger.info('Autonomous channel operator test completed successfully');
+  }
+
+  async testChannelLearningLoop() {
+    const fs = require('fs').promises;
+    const os = require('os');
+    const { ChannelLearningEngine } = require('./utils/channel-learning-engine');
+    const { ContentStrategyAgent } = require('./agents/content-strategy-agent');
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'yaa-learning-'));
+    const db = new Database();
+    db.dbPath = path.join(directory, 'learning.db');
+    await db.initialize();
+
+    try {
+      const learning = new ChannelLearningEngine(db);
+      const report = (videoId, format, performanceScore, ctr, retention, simulated = false) => ({
+        videoId,
+        videoDetails: {
+          title: `${format} automation guide`,
+          publishedAt: new Date(Date.now() - 8 * 86400000).toISOString()
+        },
+        analytics: {
+          simulated,
+          views: { totalViews: 500, totalImpressions: 5000, averageCTR: ctr },
+          watchTime: { averageViewPercentage: retention, averageViewDuration: 240, totalWatchTime: 2000 },
+          engagement: { engagementRate: format === 'tutorial' ? 6 : 2 }
+        },
+        thumbnailMetrics: { impressions: 5000, clickThroughRate: ctr },
+        performance: { score: performanceScore, grade: 'B' }
+      });
+      const context = format => ({
+        strategy: { topic: `${format} topic`, contentType: format, requestedLengthKey: 'medium' },
+        script: { hook: 'A concise opening that immediately promises a useful and concrete result.' },
+        thumbnail: { concept: { composition: 'centered' } }
+      });
+
+      await learning.capture(report('learning-tutorial-1', 'tutorial', 88, 7.5, 62), context('tutorial'), '7d');
+      await learning.capture(report('learning-tutorial-2', 'tutorial', 84, 7, 58), context('tutorial'), '7d');
+      await learning.capture(report('learning-list-1', 'list', 52, 3.5, 39), context('list'), '7d');
+      await learning.capture(report('learning-list-2', 'list', 48, 3, 35), context('list'), '7d');
+      await learning.capture(report('learning-simulated', 'review', 99, 12, 90, true), context('review'), '7d');
+
+      const summary = await learning.getSummary();
+      const recommendation = summary.recommendations.find(item => item.category === 'format');
+      if (summary.measuredVideos !== 4 || !recommendation || !/tutorial/.test(recommendation.title)) {
+        throw new Error('Learning engine did not derive a real-evidence format recommendation');
+      }
+      if (summary.recommendations.some(item => /review/.test(item.title))) {
+        throw new Error('Simulated analytics influenced a learning recommendation');
+      }
+
+      const approved = await db.reviewLearningRecommendation(recommendation.id, 'approved');
+      if (approved.status !== 'approved') throw new Error('Learning recommendation approval was not persisted');
+
+      const strategyAgent = new ContentStrategyAgent(db, {});
+      strategyAgent.analyzeTrends = async function() {
+        this.trendingTopics = [];
+        this.competitorData = [];
+      };
+      const planned = await strategyAgent.researchAndPlanChannel({
+        objective: 'Teach useful automation',
+        audience: 'Small teams',
+        value_proposition: 'Practical guidance',
+        contentPillars: ['Automation'],
+        videos_per_run: 1,
+        default_format: 'tutorial',
+        default_length: 'medium'
+      });
+      if (
+        planned.research.approvedLearnings.length !== 1 ||
+        !planned.research.sources.includes('Operator-approved channel performance learnings')
+      ) {
+        throw new Error('Approved learning was not supplied to autonomous planning');
+      }
+
+      const due = await learning.getDueMeasurementWindows({
+        youtube_id: 'unmeasured-video',
+        published_at: new Date(Date.now() - 8 * 86400000).toISOString()
+      });
+      if (!due.includes('24h') || !due.includes('7d')) {
+        throw new Error('24-hour and 7-day learning windows were not scheduled');
+      }
+
+      const { YouTubeAutomationAgent } = require('./index');
+      const { ThumbnailDesignerAgent } = require('./agents/thumbnail-designer-agent');
+      const workflow = new YouTubeAutomationAgent();
+      const titleVariants = workflow.buildTitleExperimentVariants('Automate Your Weekly Reporting');
+      const selected = workflow.validateEditorData(
+        { selectedTitleVariant: 1, selectedThumbnailVariant: 2 },
+        { packagingExperiment: { titleVariants, thumbnailVariants: [{}, {}, {}] } }
+      );
+      if (titleVariants.length !== 3 || selected.selectedTitleVariant !== 1 || selected.selectedThumbnailVariant !== 2) {
+        throw new Error('Packaging experiment selections were not validated');
+      }
+
+      const thumbnailDesigner = new ThumbnailDesignerAgent(db, {});
+      thumbnailDesigner.createThumbnail = async (_concept, suffix) => `base-${suffix}`;
+      thumbnailDesigner.addTextOverlay = async (_path, _concept, suffix) => `overlay-${suffix}`;
+      thumbnailDesigner.optimizeForYouTube = async (_path, suffix) => `optimized-${suffix}.jpg`;
+      const thumbnailVariants = await thumbnailDesigner.generateABVariants({
+        primaryText: 'GUIDE',
+        colors: { primary: 'blue', secondary: 'white', accent: 'green' },
+        composition: 'split'
+      });
+      if (thumbnailVariants.length !== 3 || thumbnailVariants.some(item => !item.path.endsWith('.jpg'))) {
+        throw new Error('Approved packaging learning did not produce complete thumbnail variants');
+      }
+    } finally {
+      await db.close();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+
+    this.logger.info('Closed-loop channel learning test completed successfully');
   }
 
   async testAPIValidationAndSecurity() {

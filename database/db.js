@@ -146,6 +146,37 @@ class Database {
         performance_grade TEXT,
         analyzed_at TEXT DEFAULT CURRENT_TIMESTAMP
       )`,
+
+      // Evidence-backed channel learning
+      `CREATE TABLE IF NOT EXISTS performance_snapshots (
+        id TEXT PRIMARY KEY,
+        video_id TEXT NOT NULL,
+        production_id TEXT,
+        measurement_window TEXT NOT NULL,
+        published_at TEXT,
+        metrics TEXT NOT NULL,
+        content_attributes TEXT NOT NULL,
+        baseline TEXT,
+        deltas TEXT,
+        confidence TEXT DEFAULT 'low',
+        simulated INTEGER DEFAULT 0,
+        measured_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(video_id, measurement_window)
+      )`,
+      `CREATE TABLE IF NOT EXISTS learning_recommendations (
+        id TEXT PRIMARY KEY,
+        fingerprint TEXT NOT NULL UNIQUE,
+        category TEXT NOT NULL,
+        title TEXT NOT NULL,
+        rationale TEXT NOT NULL,
+        evidence TEXT NOT NULL,
+        proposed_change TEXT NOT NULL,
+        confidence TEXT DEFAULT 'low',
+        status TEXT DEFAULT 'pending',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        reviewed_at TEXT
+      )`,
       
       // Keywords Performance
       `CREATE TABLE IF NOT EXISTS keyword_performance (
@@ -983,6 +1014,194 @@ class Database {
       seoMetrics: JSON.parse(row.seo_metrics || '{}'),
       insights: JSON.parse(row.insights || '[]')
     }));
+  }
+
+  async savePerformanceSnapshot(snapshot) {
+    const existing = await this.getRow(
+      'SELECT id FROM performance_snapshots WHERE video_id = ? AND measurement_window = ?',
+      [snapshot.videoId, snapshot.measurementWindow]
+    );
+    const id = existing?.id || this.generateId('snapshot');
+    await this.executeQuery(
+      `INSERT INTO performance_snapshots (
+        id, video_id, production_id, measurement_window, published_at, metrics,
+        content_attributes, baseline, deltas, confidence, simulated, measured_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(video_id, measurement_window) DO UPDATE SET
+        production_id = excluded.production_id,
+        published_at = excluded.published_at,
+        metrics = excluded.metrics,
+        content_attributes = excluded.content_attributes,
+        baseline = excluded.baseline,
+        deltas = excluded.deltas,
+        confidence = excluded.confidence,
+        simulated = excluded.simulated,
+        measured_at = excluded.measured_at`,
+      [
+        id,
+        snapshot.videoId,
+        snapshot.productionId || null,
+        snapshot.measurementWindow,
+        snapshot.publishedAt || null,
+        JSON.stringify(snapshot.metrics || {}),
+        JSON.stringify(snapshot.contentAttributes || {}),
+        JSON.stringify(snapshot.baseline || {}),
+        JSON.stringify(snapshot.deltas || {}),
+        snapshot.confidence || 'low',
+        snapshot.simulated ? 1 : 0,
+        snapshot.measuredAt || new Date().toISOString()
+      ]
+    );
+    return this.getPerformanceSnapshot(id);
+  }
+
+  async getPerformanceSnapshot(id) {
+    const row = await this.getRow('SELECT * FROM performance_snapshots WHERE id = ?', [id]);
+    return this.parsePerformanceSnapshot(row);
+  }
+
+  async listPerformanceSnapshots(options = {}) {
+    const conditions = [];
+    const params = [];
+    if (options.videoId) {
+      conditions.push('video_id = ?');
+      params.push(options.videoId);
+    }
+    if (options.excludeVideoId) {
+      conditions.push('video_id != ?');
+      params.push(options.excludeVideoId);
+    }
+    if (options.measurementWindow) {
+      conditions.push('measurement_window = ?');
+      params.push(options.measurementWindow);
+    }
+    if (options.reliableOnly) conditions.push('simulated = 0');
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const rows = await this.getAllRows(
+      `SELECT * FROM performance_snapshots ${where} ORDER BY measured_at DESC`,
+      params
+    );
+    return rows.map(row => this.parsePerformanceSnapshot(row));
+  }
+
+  parsePerformanceSnapshot(row) {
+    if (!row) return null;
+    return {
+      ...row,
+      videoId: row.video_id,
+      productionId: row.production_id,
+      measurementWindow: row.measurement_window,
+      publishedAt: row.published_at,
+      measuredAt: row.measured_at,
+      simulated: Boolean(row.simulated),
+      metrics: JSON.parse(row.metrics || '{}'),
+      contentAttributes: JSON.parse(row.content_attributes || '{}'),
+      baseline: JSON.parse(row.baseline || '{}'),
+      deltas: JSON.parse(row.deltas || '{}')
+    };
+  }
+
+  async saveLearningRecommendation(recommendation) {
+    const existing = await this.getRow(
+      'SELECT id FROM learning_recommendations WHERE fingerprint = ?',
+      [recommendation.fingerprint]
+    );
+    const id = existing?.id || this.generateId('learning');
+    await this.executeQuery(
+      `INSERT INTO learning_recommendations (
+        id, fingerprint, category, title, rationale, evidence, proposed_change, confidence
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(fingerprint) DO UPDATE SET
+        category = excluded.category,
+        title = excluded.title,
+        rationale = excluded.rationale,
+        evidence = excluded.evidence,
+        proposed_change = excluded.proposed_change,
+        confidence = excluded.confidence,
+        updated_at = CURRENT_TIMESTAMP`,
+      [
+        id,
+        recommendation.fingerprint,
+        recommendation.category,
+        recommendation.title,
+        recommendation.rationale,
+        JSON.stringify(recommendation.evidence || {}),
+        JSON.stringify(recommendation.proposedChange || {}),
+        recommendation.confidence || 'low'
+      ]
+    );
+    return this.getLearningRecommendation(id);
+  }
+
+  async getLearningRecommendation(id) {
+    const row = await this.getRow('SELECT * FROM learning_recommendations WHERE id = ?', [id]);
+    return this.parseLearningRecommendation(row);
+  }
+
+  async listLearningRecommendations(options = {}) {
+    const conditions = [];
+    const params = [];
+    if (options.status) {
+      conditions.push('status = ?');
+      params.push(options.status);
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const limit = Math.max(1, Math.min(100, Number(options.limit || 25)));
+    const rows = await this.getAllRows(
+      `SELECT * FROM learning_recommendations ${where}
+       ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,
+                updated_at DESC LIMIT ?`,
+      [...params, limit]
+    );
+    return rows.map(row => this.parseLearningRecommendation(row));
+  }
+
+  async reviewLearningRecommendation(id, status) {
+    if (!['approved', 'rejected'].includes(status)) return null;
+    await this.executeQuery(
+      `UPDATE learning_recommendations
+       SET status = ?, reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [status, id]
+    );
+    return this.getLearningRecommendation(id);
+  }
+
+  parseLearningRecommendation(row) {
+    if (!row) return null;
+    return {
+      ...row,
+      proposedChange: JSON.parse(row.proposed_change || '{}'),
+      evidence: JSON.parse(row.evidence || '{}'),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      reviewedAt: row.reviewed_at
+    };
+  }
+
+  async getPublishedContentContext(youtubeId) {
+    const row = await this.getRow(
+      `SELECT sch.production_id, sch.published_at, sch.title, ps.strategy, ps.script, ps.thumbnail, ps.seo,
+              cr.editor_data
+       FROM publish_schedule sch
+       LEFT JOIN production_snapshots ps ON ps.production_id = sch.production_id
+       LEFT JOIN content_reviews cr ON cr.production_id = sch.production_id
+       WHERE sch.youtube_id = ? ORDER BY sch.published_at DESC LIMIT 1`,
+      [youtubeId]
+    );
+    if (!row) return {};
+    const editorData = JSON.parse(row.editor_data || '{}');
+    const thumbnail = JSON.parse(row.thumbnail || '{}');
+    const selectedThumbnail = editorData.packagingExperiment?.thumbnailVariants?.[editorData.selectedThumbnailVariant];
+    return {
+      productionId: row.production_id,
+      publishedAt: row.published_at,
+      title: editorData.title || row.title,
+      strategy: JSON.parse(row.strategy || '{}'),
+      script: JSON.parse(row.script || '{}'),
+      thumbnail: selectedThumbnail?.concept ? { ...thumbnail, concept: selectedThumbnail.concept } : thumbnail,
+      seo: JSON.parse(row.seo || '{}')
+    };
   }
 
   // Keyword performance

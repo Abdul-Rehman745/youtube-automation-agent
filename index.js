@@ -354,9 +354,10 @@ class YouTubeAutomationAgent {
     // Get analytics
     this.app.get('/analytics', async (req, res) => {
       try {
-        if (!this.agents.analytics) return res.json({ totalVideos: 0, averagePerformanceScore: 0, topPerformers: [], insights: [] });
+        if (!this.agents.analytics) return res.json({ totalVideos: 0, averagePerformanceScore: 0, topPerformers: [], insights: [], learning: null });
         const analytics = await this.agents.analytics.getRecentAnalytics();
-        res.json(analytics);
+        const learning = await this.agents.analytics.getLearningSummary();
+        res.json({ ...analytics, learning });
       } catch (error) {
         res.status(500).json({ error: error.message });
       }
@@ -396,7 +397,7 @@ class YouTubeAutomationAgent {
 
     this.app.get('/api/dashboard', async (_req, res) => {
       try {
-        const [stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics, activation, channelStrategy, operatorRuns] = await Promise.all([
+        const [stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics, learning, activation, channelStrategy, operatorRuns] = await Promise.all([
           this.db.getStats(),
           this.db.listGenerationJobs(20),
           this.db.getPipelineOverview(50),
@@ -409,6 +410,9 @@ class YouTubeAutomationAgent {
           this.agents.analytics
             ? this.agents.analytics.getRecentAnalytics(30)
             : Promise.resolve({ totalVideos: 0, averagePerformanceScore: 0, topPerformers: [], insights: [] }),
+          this.agents.analytics?.getLearningSummary
+            ? this.agents.analytics.getLearningSummary()
+            : Promise.resolve({ measuredVideos: 0, snapshotCount: 0, baseline: {}, recommendations: [], approvedCount: 0, pendingCount: 0 }),
           this.activation
             ? this.activation.getSummary()
             : Promise.resolve({ privacy: 'local-only', counts: {}, milestones: {} }),
@@ -417,7 +421,7 @@ class YouTubeAutomationAgent {
         ]);
         if (this.telemetry) void this.telemetry.sync(activation);
         res.json({
-          stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics, activation,
+          stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics, learning, activation,
           channelStrategy, operatorRuns,
           system: {
             initialized: this.isInitialized,
@@ -522,11 +526,18 @@ class YouTubeAutomationAgent {
           captions: bundle.assets?.captions?.path,
           script: bundle.assets?.script?.originalPath
         };
-        const filePath = allowed[req.params.kind];
+        const experimentMatch = req.params.kind.match(/^experiment-thumbnail-(\d+)$/);
+        const experimentPath = experimentMatch
+          ? bundle.editorData?.packagingExperiment?.thumbnailVariants?.[Number(experimentMatch[1])]?.path
+          : null;
+        const filePath = allowed[req.params.kind] || experimentPath;
         if (!filePath) return res.status(404).json({ error: 'Asset not found' });
         const resolved = path.resolve(filePath);
         const dataRoot = path.resolve(__dirname, 'data');
-        if (!resolved.startsWith(`${dataRoot}${path.sep}`)) return res.status(403).json({ error: 'Asset path is not allowed' });
+        const experimentRoot = path.resolve(__dirname, 'uploads', 'thumbnails');
+        const allowedPath = [dataRoot, experimentRoot]
+          .some(root => resolved.startsWith(`${root}${path.sep}`));
+        if (!allowedPath) return res.status(403).json({ error: 'Asset path is not allowed' });
         await fs.access(resolved);
         return res.sendFile(resolved);
       } catch (_error) {
@@ -584,6 +595,24 @@ class YouTubeAutomationAgent {
       const run = await this.autonomous.cancel(req.params.runId);
       if (!run) return res.status(404).json({ error: 'Operator run not found' });
       return res.json({ success: true, result: run });
+    });
+
+    this.app.post('/api/learning/recommendations/:recommendationId/:action', protect, async (req, res) => {
+      const { recommendationId, action } = req.params;
+      if (!['approve', 'reject'].includes(action)) {
+        return res.status(400).json({ error: 'Action must be approve or reject' });
+      }
+      const status = action === 'approve' ? 'approved' : 'rejected';
+      const recommendation = await this.db.reviewLearningRecommendation(recommendationId, status);
+      if (!recommendation) return res.status(404).json({ error: 'Learning recommendation not found' });
+      await this.operator.notify({
+        type: 'learning_recommendation_reviewed',
+        level: action === 'approve' ? 'success' : 'info',
+        title: action === 'approve' ? 'Channel learning approved' : 'Channel learning rejected',
+        message: recommendation.title,
+        data: { recommendationId, status }
+      });
+      return res.json({ success: true, result: recommendation });
     });
 
     this.app.post('/api/ideas', protect, async (req, res) => {
@@ -793,6 +822,11 @@ class YouTubeAutomationAgent {
     });
     this.logger.info('Production processing complete');
 
+    const approvalRequired = await this.db.getSetting('approval_required') !== 'false';
+    const packagingExperiment = approvalRequired
+      ? await this.preparePackagingExperiment(thumbnail, productionData, seoData, script)
+      : null;
+
     // Step 6: Save to database
     const contentId = await this.db.saveProductionData(productionData);
     await this.db.saveProductionSnapshot(productionData);
@@ -801,14 +835,17 @@ class YouTubeAutomationAgent {
     // Step 7: Quality and approval gate
     await this.updateJobStage(jobId, 'quality_review', 90, { contentId });
     const quality = await this.operator.runQualityChecks(productionData, profile);
-    const approvalRequired = await this.db.getSetting('approval_required') !== 'false';
     const reviewStatus = quality.passed
       ? (approvalRequired ? 'needs_review' : 'approved')
       : 'needs_attention';
     await this.db.saveContentReview(contentId, {
       status: reviewStatus,
       qualityChecks: quality.checks,
-      editorData: {},
+      editorData: packagingExperiment ? {
+        packagingExperiment,
+        selectedTitleVariant: 0,
+        selectedThumbnailVariant: 0
+      } : {},
       reviewNotes: quality.passed ? null : `Blocking checks failed: ${quality.blockingFailures.join(', ')}`,
       reviewedAt: approvalRequired ? null : new Date().toISOString()
     });
@@ -867,7 +904,55 @@ class YouTubeAutomationAgent {
     }
     if (input.factChecked !== undefined) output.factChecked = input.factChecked === true;
     if (input.rightsConfirmed !== undefined) output.rightsConfirmed = input.rightsConfirmed === true;
+    const experiment = output.packagingExperiment;
+    if (input.selectedTitleVariant !== undefined) {
+      const selected = Number(input.selectedTitleVariant);
+      if (!Number.isInteger(selected) || !experiment?.titleVariants?.[selected]) {
+        throw new Error('Selected title variant is invalid');
+      }
+      output.selectedTitleVariant = selected;
+    }
+    if (input.selectedThumbnailVariant !== undefined) {
+      const selected = Number(input.selectedThumbnailVariant);
+      if (!Number.isInteger(selected) || !experiment?.thumbnailVariants?.[selected]) {
+        throw new Error('Selected thumbnail variant is invalid');
+      }
+      output.selectedThumbnailVariant = selected;
+    }
     return output;
+  }
+
+  buildTitleExperimentVariants(title) {
+    const control = String(title || '').trim().slice(0, 100);
+    const withoutPunctuation = control.replace(/[.!?]+$/, '');
+    return [
+      { label: 'Control', title: control },
+      { label: 'Step-by-step', title: `${withoutPunctuation}: Step-by-Step`.slice(0, 100) },
+      { label: 'Curiosity', title: `${withoutPunctuation}: What Most People Miss`.slice(0, 100) }
+    ];
+  }
+
+  async preparePackagingExperiment(thumbnail, productionData, seoData, script) {
+    const approved = await this.db.listLearningRecommendations({ status: 'approved', limit: 25 });
+    const recommendation = approved.find(item => item.proposedChange?.experiment === 'title_thumbnail_variant');
+    if (!recommendation) return null;
+    try {
+      const generated = await this.agents.thumbnailDesigner.generateABVariants(thumbnail.concept);
+      return {
+        sourceRecommendationId: recommendation.id,
+        hypothesis: recommendation.title,
+        status: 'draft',
+        titleVariants: this.buildTitleExperimentVariants(seoData.title || script.title),
+        thumbnailVariants: [
+          { label: 'Control', path: productionData.assets?.thumbnail?.path, concept: thumbnail.concept },
+          ...generated
+        ],
+        createdAt: new Date().toISOString()
+      };
+    } catch (error) {
+      this.logger.warn(`Packaging experiment preparation failed without blocking production: ${error.message}`);
+      return null;
+    }
   }
 
   validateProfile(input) {
@@ -888,11 +973,15 @@ class YouTubeAutomationAgent {
   }
 
   decorateContentBundle(bundle) {
+    const experiment = bundle.editorData?.packagingExperiment;
     return {
       ...bundle,
       assetUrls: {
         video: bundle.assets?.finalVideo?.path && !bundle.assets?.finalVideo?.simulated ? `/api/content/${bundle.id}/asset/video` : null,
         thumbnail: bundle.assets?.thumbnail?.path ? `/api/content/${bundle.id}/asset/thumbnail` : null,
+        experimentThumbnails: (experiment?.thumbnailVariants || []).map((_variant, index) =>
+          `/api/content/${bundle.id}/asset/experiment-thumbnail-${index}`
+        ),
         captions: bundle.assets?.captions?.path ? `/api/content/${bundle.id}/asset/captions` : null,
         script: bundle.assets?.script?.originalPath ? `/api/content/${bundle.id}/asset/script` : null
       }
@@ -913,6 +1002,10 @@ class YouTubeAutomationAgent {
     }
 
     const editorData = this.validateEditorData(input, bundle.editorData);
+    const packagingExperiment = editorData.packagingExperiment;
+    const thumbnailVariant = packagingExperiment?.thumbnailVariants?.[editorData.selectedThumbnailVariant];
+    const titleVariant = packagingExperiment?.titleVariants?.[editorData.selectedTitleVariant];
+    if (titleVariant && input.title === undefined) editorData.title = titleVariant.title;
     if (!editorData.factChecked || !editorData.rightsConfirmed) {
       const error = new Error('Confirm the factual review and media rights checks before approval');
       error.status = 409;
@@ -930,7 +1023,9 @@ class YouTubeAutomationAgent {
         description: editorData.description || bundle.seo.description,
         tags: editorData.tags || bundle.seo.tags
       },
-      assets: bundle.assets,
+      assets: thumbnailVariant
+        ? { ...bundle.assets, thumbnail: { ...bundle.assets.thumbnail, path: thumbnailVariant.path } }
+        : bundle.assets,
       timeline: bundle.timeline,
       scheduledPublishTime: editorData.publishTime || input.publishTime || bundle.scheduled_publish_time,
       priority: bundle.priority,

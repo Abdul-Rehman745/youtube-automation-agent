@@ -47,6 +47,14 @@ Lumen refreshes YouTube trend and configured-competitor signals, checks recent c
 
 By default, finished videos wait for factual review, media-rights confirmation, and approval. Once approved, the existing publishing agent schedules and uploads them. Turning on autonomy does not bypass those gates, and simulated videos still cannot publish.
 
+### Close the performance loop
+
+After publication, Lumen captures comparable 24-hour and 7-day performance snapshots. It evaluates CTR, retention, engagement, watch time, format, length, hook style, and title style against the channel's own history—not a universal view-count target.
+
+Open **Analytics → What the agent learned** to review the evidence and confidence behind each recommendation. Pending or rejected recommendations never influence generation. Once you approve one, the next Autonomous Channel Operator run includes it as an explicit planning constraint. Simulated analytics fallbacks are stored as unverified and are never eligible for baselines or recommendations.
+
+When an approved learning calls for better packaging, Lumen prepares a control plus title and thumbnail variants for new videos. Review Studio shows those options before approval; the selected combination is the only one handed to the publishing queue. Lumen does not silently swap live YouTube metadata.
+
 ## From idea to published video
 
 | Stage | What Lumen does | What you control |
@@ -56,7 +64,7 @@ By default, finished videos wait for factual review, media-rights confirmation, 
 | Production | Generates narration and visuals, then assembles a real MP4 | Provider choice and media fallbacks |
 | Review | Runs quality checks and opens the video in Review Studio | Facts, media rights, edits, approval |
 | Publish | Schedules and uploads approved content | Privacy, timing, final decision |
-| Learn | Pulls performance signals into the next strategy cycle | Automation and optimization settings |
+| Learn | Captures 24-hour and 7-day evidence, then proposes the next move | Approve or reject each learning before it guides planning |
 
 Lumen distinguishes real MP4 output from simulated placeholders. Simulated output cannot enter the approval or publishing path.
 
@@ -221,6 +229,8 @@ The scheduler runs automatically after `npm start`. Content generation at 06:00,
 
 When an active channel strategy exists, the 06:00 generation check uses its cadence and launches an autonomous research-and-production run when the content buffer needs work. Without an active strategy, the original topic-selection flow remains in place.
 
+Daily analytics collection backfills each real publication's 24-hour and 7-day evidence windows. Recommendations require at least two real measurements, and format or style comparisons require at least two videos in each compared group.
+
 ## API
 
 ```bash
@@ -253,6 +263,10 @@ curl http://localhost:3456/schedule
 
 # get analytics
 curl http://localhost:3456/analytics
+
+# approve an evidence-backed learning for future autonomous plans
+curl -X POST http://localhost:3456/api/learning/recommendations/:recommendationId/approve \
+  -H "x-api-key: $API_KEY"
 
 # inspect, edit, and approve content before scheduling
 curl http://localhost:3456/api/content/:contentId

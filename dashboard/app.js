@@ -135,7 +135,7 @@ function renderDashboard() {
   renderPipeline(state.pipeline);
   renderCalendar(state.schedule);
   renderIdeas(state.ideas);
-  renderAnalytics(state.analytics);
+  renderAnalytics(state.analytics, state.learning);
   renderActivation(state.activation);
   renderOperator(state.channelStrategy, state.operatorRuns || [], state.system);
   populateSettings(state.profile, state.settings);
@@ -255,16 +255,46 @@ function renderIdeas(ideas) {
     </article>`).join('');
 }
 
-function renderAnalytics(analytics) {
+function renderAnalytics(analytics, learning = {}) {
   $('#analytics-total').textContent = analytics.totalVideos || 0;
   $('#analytics-score').textContent = analytics.averagePerformanceScore ? `${analytics.averagePerformanceScore}/100` : '—';
   const insights = Array.isArray(analytics.insights) ? analytics.insights : [];
-  $('#analytics-action').textContent = insights[0] || (analytics.totalVideos
+  const approved = (learning.recommendations || []).find(item => item.status === 'approved');
+  const pending = (learning.recommendations || []).find(item => item.status === 'pending');
+  $('#analytics-action').textContent = approved?.title || pending?.title || insights[0] || (analytics.totalVideos
     ? 'Keep collecting results; recommendations get stronger with more published videos.'
     : 'Publish and analyze the first video to unlock performance recommendations.');
   const performers = Array.isArray(analytics.topPerformers) ? analytics.topPerformers : [];
   $('#top-performers').innerHTML = performers.length ? performers.map(item => `
     <article class="performer-card"><strong>${escapeHTML(item.videoDetails?.title || item.title || 'Untitled video')}</strong><div class="meta-line">Performance ${escapeHTML(item.performance?.score ?? item.performance_score ?? '—')} / 100</div></article>`).join('') : empty('No analyzed videos yet.');
+  renderLearning(learning);
+}
+
+function renderLearning(learning = {}) {
+  const baseline = learning.baseline || {};
+  $('#learning-snapshot-count').textContent = `${learning.snapshotCount || 0} snapshots`;
+  $('#learning-approved-count').textContent = `${learning.approvedCount || 0} approved`;
+  const metrics = [
+    ['CTR', baseline.ctr, '%'],
+    ['Retention', baseline.retention, '%'],
+    ['Engagement', baseline.engagementRate, '%'],
+    ['Performance', baseline.performanceScore, '/100']
+  ];
+  $('#learning-baseline').innerHTML = learning.measuredVideos ? metrics.map(([name, value, suffix]) => `
+    <div><span>${escapeHTML(name)}</span><strong>${Number(value || 0).toFixed(1)}${escapeHTML(suffix)}</strong></div>`).join('') : empty('Two real measurements unlock evidence-backed recommendations.');
+
+  const recommendations = Array.isArray(learning.recommendations) ? learning.recommendations : [];
+  $('#learning-recommendations').innerHTML = recommendations.length ? recommendations.map(item => `
+    <article class="learning-card">
+      <div class="learning-card-heading"><strong>${escapeHTML(item.title)}</strong>${statusChip(item.status)}</div>
+      <p>${escapeHTML(item.rationale)}</p>
+      <div class="learning-meta"><span>${escapeHTML(label(item.category))} · ${escapeHTML(label(item.confidence))} confidence</span>
+        <span class="learning-actions">
+          ${item.status !== 'approved' ? `<button class="text-button approve" data-learning-action="approve" data-learning-id="${escapeHTML(item.id)}">Approve</button>` : ''}
+          ${item.status !== 'rejected' ? `<button class="text-button" data-learning-action="reject" data-learning-id="${escapeHTML(item.id)}">Reject</button>` : ''}
+        </span>
+      </div>
+    </article>`).join('') : empty('No recommendation yet. Lumen needs at least two real, sufficiently exposed measurements.');
 }
 
 function renderActivation(activation = {}) {
@@ -396,6 +426,9 @@ async function openContent(productionId) {
     const tags = data.tags || item.seo?.tags || [];
     const publishTime = data.publishTime || item.schedule?.publish_time || item.scheduled_publish_time;
     const canReview = !['published'].includes(item.schedule?.status);
+    const experiment = data.packagingExperiment;
+    const selectedTitleVariant = Number(data.selectedTitleVariant || 0);
+    const selectedThumbnailVariant = Number(data.selectedThumbnailVariant || 0);
     $('#content-detail').innerHTML = `
       <div class="dialog-heading"><div><p class="eyebrow">CONTENT REVIEW</p><h2>${escapeHTML(title)}</h2><div class="meta-line">${statusChip(item.schedule?.status || item.review_status || item.status)} · Quality ${qualityScore(item.qualityChecks)}%</div></div><button type="button" class="close-button" data-close>×</button></div>
       <div class="content-layout">
@@ -408,6 +441,11 @@ async function openContent(productionId) {
           <label><span>Title</span><input name="title" maxlength="100" value="${escapeHTML(title)}" required></label>
           <label><span>Description</span><textarea name="description" rows="7">${escapeHTML(description)}</textarea></label>
           <label><span>Tags</span><input name="tags" value="${escapeHTML(tags.join(', '))}"></label>
+          ${experiment ? `<section class="experiment-panel">
+            <div><p class="eyebrow">APPROVED LEARNING EXPERIMENT</p><strong>${escapeHTML(experiment.hypothesis)}</strong><p>Choose the packaging to ship. Nothing changes on YouTube until this content is approved and published.</p></div>
+            <label><span>Title variant</span><select name="selectedTitleVariant">${experiment.titleVariants.map((variant, index) => `<option value="${index}" data-title="${escapeHTML(variant.title)}" ${index === selectedTitleVariant ? 'selected' : ''}>${escapeHTML(variant.label)} — ${escapeHTML(variant.title)}</option>`).join('')}</select></label>
+            <div class="experiment-thumbnails">${experiment.thumbnailVariants.map((variant, index) => `<label class="experiment-thumb ${index === selectedThumbnailVariant ? 'selected' : ''}"><input type="radio" name="selectedThumbnailVariant" value="${index}" ${index === selectedThumbnailVariant ? 'checked' : ''}><img src="${escapeHTML(item.assetUrls.experimentThumbnails?.[index] || '')}" alt="${escapeHTML(variant.label)} thumbnail variant"><span>${escapeHTML(variant.label)}</span></label>`).join('')}</div>
+          </section>` : ''}
           <div class="form-grid two">
             <label><span>Publish time</span><input name="publishTime" type="datetime-local" value="${toLocalInput(publishTime)}"></label>
             <label><span>Privacy</span><select name="privacyStatus"><option value="private" ${data.privacyStatus === 'private' ? 'selected' : ''}>Private</option><option value="unlisted" ${data.privacyStatus === 'unlisted' ? 'selected' : ''}>Unlisted</option><option value="public" ${data.privacyStatus === 'public' ? 'selected' : ''}>Public</option></select></label>
@@ -444,6 +482,8 @@ function contentFormData() {
     tags: values.tags,
     publishTime: values.publishTime ? new Date(values.publishTime).toISOString() : undefined,
     privacyStatus: values.privacyStatus,
+    selectedTitleVariant: values.selectedTitleVariant,
+    selectedThumbnailVariant: values.selectedThumbnailVariant,
     factChecked: form.elements.factChecked?.checked || false,
     rightsConfirmed: form.elements.rightsConfirmed?.checked || false
   };
@@ -485,6 +525,16 @@ document.addEventListener('click', async event => {
     await mutate(`/api/ideas/${encodeURIComponent(idea.dataset.generateIdea)}/generate`, 'POST', { length: 'medium' }, 'Idea queued for generation.').catch(() => {});
   }
 
+  const learning = event.target.closest('[data-learning-action]');
+  if (learning) {
+    const action = learning.dataset.learningAction;
+    const id = learning.dataset.learningId;
+    const message = action === 'approve'
+      ? 'Learning approved for future autonomous plans.'
+      : 'Learning rejected and excluded from future plans.';
+    await mutate(`/api/learning/recommendations/${encodeURIComponent(id)}/${action}`, 'POST', {}, message).catch(() => {});
+  }
+
   const save = event.target.closest('[data-save-content]');
   if (save) {
     await mutate(`/api/content/${encodeURIComponent(save.dataset.saveContent)}`, 'PATCH', contentFormData(), 'Draft saved.').catch(() => {});
@@ -511,6 +561,14 @@ document.addEventListener('click', async event => {
   if (retry && confirm('Generate a fresh version using the same topic?')) {
     await mutate(`/api/content/${encodeURIComponent(retry.dataset.retryContent)}/retry`, 'POST', {}, 'Regeneration started.').catch(() => {});
     $('#content-dialog').close();
+  }
+});
+
+document.addEventListener('change', event => {
+  if (event.target.matches('[name="selectedTitleVariant"]')) {
+    const title = event.target.selectedOptions[0]?.dataset.title;
+    const input = $('#content-review-form [name="title"]');
+    if (title && input) input.value = title;
   }
 });
 
