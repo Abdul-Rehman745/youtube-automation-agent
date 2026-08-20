@@ -137,6 +137,7 @@ function renderDashboard() {
   renderIdeas(state.ideas);
   renderAnalytics(state.analytics);
   renderActivation(state.activation);
+  renderOperator(state.channelStrategy, state.operatorRuns || [], state.system);
   populateSettings(state.profile, state.settings);
 }
 
@@ -291,6 +292,63 @@ function renderActivation(activation = {}) {
   }
 }
 
+function renderOperator(strategy, runs, system) {
+  const form = $('#strategy-form');
+  const mapping = strategy ? {
+    objective: strategy.objective,
+    audience: strategy.audience,
+    valueProposition: strategy.value_proposition,
+    contentPillars: (strategy.contentPillars || []).join(', '),
+    cadencePerWeek: strategy.cadence_per_week,
+    videosPerRun: strategy.videos_per_run,
+    defaultFormat: strategy.default_format,
+    defaultLength: strategy.default_length,
+    successMetric: strategy.success_metric,
+    constraints: strategy.constraints
+  } : {};
+  for (const [name, value] of Object.entries(mapping)) {
+    if (form.elements[name] && document.activeElement !== form.elements[name]) form.elements[name].value = value ?? '';
+  }
+
+  const strategyStatus = strategy?.status || 'not_configured';
+  $('#operator-strategy-status').className = `status ${escapeHTML(strategyStatus)}`;
+  $('#operator-strategy-status').textContent = label(strategyStatus);
+  const run = runs[0];
+  const active = run && ['queued', 'running', 'cancelling'].includes(run.status);
+  $('#activate-operator-button').disabled = Boolean(system.setupRequired || active);
+  $('#activate-operator-button').textContent = strategy?.status === 'active' ? 'Run strategy now' : 'Activate & run now';
+  $('#pause-operator-button').classList.toggle('hidden', strategy?.status !== 'active');
+  $('#cancel-operator-run').classList.toggle('hidden', !active);
+  if (active) $('#cancel-operator-run').dataset.runId = run.id;
+
+  if (!run) {
+    $('#operator-run-title').textContent = 'Waiting for a strategy';
+    $('#operator-run-summary').innerHTML = empty('Save a channel mandate, then activate it to research and produce the first plan.');
+    $('#operator-plan').innerHTML = empty('No editorial plan yet.');
+    return;
+  }
+
+  $('#operator-run-title').textContent = `${label(run.stage)} · ${run.progress || 0}%`;
+  const sources = Array.isArray(run.research?.sources) ? run.research.sources.join(', ') : 'Research pending';
+  $('#operator-run-summary').innerHTML = `<div class="run-summary">
+    <div class="progress"><i style="width:${Math.max(0, Math.min(100, run.progress || 0))}%"></i></div>
+    <div class="run-summary-row"><span>Status</span><strong>${statusChip(run.status)}</strong></div>
+    <div class="run-summary-row"><span>Research</span><strong>${escapeHTML(sources)}</strong></div>
+    <div class="run-summary-row"><span>Produced</span><strong>${escapeHTML(run.summary?.generated || 0)} / ${escapeHTML(run.summary?.planned || run.plan?.length || 0)}</strong></div>
+    <div class="run-summary-row"><span>Needs review</span><strong>${escapeHTML(run.summary?.needsReview || 0)}</strong></div>
+    ${run.error ? `<p class="callout">${escapeHTML(run.error)}</p>` : ''}
+  </div>`;
+  const plan = Array.isArray(run.plan) ? run.plan : [];
+  $('#operator-plan').innerHTML = plan.length ? plan.map((item, index) => {
+    const job = (run.generatedJobs || []).find(candidate => candidate.topic === item.topic);
+    return `<article class="plan-card">
+      <div class="meta-line">${index + 1} · ${escapeHTML(item.format)} · ${escapeHTML(item.length)} ${job ? `· ${statusChip(job.reviewStatus || job.status)}` : ''}</div>
+      <strong>${escapeHTML(item.topic)}</strong>
+      <p>${escapeHTML(item.angle || item.rationale)}</p>
+    </article>`;
+  }).join('') : empty('Research and planning will appear here when the run begins.');
+}
+
 function populateSettings(profile = {}, settings = {}) {
   const form = $('#profile-form');
   const mapping = {
@@ -317,6 +375,7 @@ function switchView(view) {
   $$('.view').forEach(item => item.classList.toggle('active', item.id === `${view}-view`));
   const titles = {
     overview: ['OPERATOR OVERVIEW', 'Know what happens next.'],
+    operator: ['AUTONOMOUS OPERATOR', 'Give Lumen the strategy.'],
     pipeline: ['CONTENT OPERATIONS', 'From idea to published.'],
     calendar: ['EDITORIAL PLANNING', 'Plan before you generate.'],
     analytics: ['PERFORMANCE', 'Turn results into the next move.'],
@@ -465,6 +524,39 @@ $('#automation-toggle').addEventListener('click', async () => {
   await mutate(`/api/automation/${action}`, 'POST', {}, `Automation ${action}d.`).catch(() => {});
 });
 
+function strategyFormData(status = ui.state?.channelStrategy?.status || 'draft') {
+  const form = $('#strategy-form');
+  const values = Object.fromEntries(new FormData(form));
+  return {
+    ...values,
+    contentPillars: values.contentPillars.split(',').map(value => value.trim()).filter(Boolean),
+    cadencePerWeek: Number(values.cadencePerWeek),
+    videosPerRun: Number(values.videosPerRun),
+    status
+  };
+}
+
+$('#strategy-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  await mutate('/api/operator/strategy', 'PUT', strategyFormData(), 'Channel strategy saved.').catch(() => {});
+});
+
+$('#activate-operator-button').addEventListener('click', async () => {
+  if (!$('#strategy-form').reportValidity()) return;
+  await mutate('/api/operator/start', 'POST', strategyFormData('active'), 'Autonomous operator started.').catch(() => {});
+});
+
+$('#pause-operator-button').addEventListener('click', async () => {
+  await mutate('/api/operator/pause', 'POST', {}, 'Autonomous operator paused.').catch(() => {});
+});
+
+$('#cancel-operator-run').addEventListener('click', async event => {
+  const runId = event.currentTarget.dataset.runId;
+  if (runId && confirm('Stop this autonomous run after the current agent stage?')) {
+    await mutate(`/api/operator/runs/${encodeURIComponent(runId)}/cancel`, 'POST', {}, 'Operator stop requested.').catch(() => {});
+  }
+});
+
 $('#generate-form').addEventListener('submit', async event => {
   event.preventDefault();
   const values = Object.fromEntries(new FormData(event.currentTarget));
@@ -504,6 +596,6 @@ $('#api-key-button').addEventListener('click', () => {
 });
 
 const initialView = location.hash.slice(1);
-if (['overview', 'pipeline', 'calendar', 'analytics', 'settings'].includes(initialView)) switchView(initialView);
+if (['overview', 'operator', 'pipeline', 'calendar', 'analytics', 'settings'].includes(initialView)) switchView(initialView);
 refreshDashboard();
 setInterval(() => refreshDashboard(true), 8000);

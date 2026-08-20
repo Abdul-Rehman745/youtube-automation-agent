@@ -15,6 +15,7 @@ const { PublishingSchedulingAgent } = require('./agents/publishing-scheduling-ag
 const { AnalyticsOptimizationAgent } = require('./agents/analytics-optimization-agent');
 const { DailyAutomation } = require('./schedules/daily-automation');
 const { OperatorService } = require('./utils/operator-service');
+const { AutonomousChannelOperator } = require('./utils/autonomous-channel-operator');
 const { ActivationMetrics } = require('./utils/activation-metrics');
 const { AnonymousTelemetry } = require('./utils/anonymous-telemetry');
 const { version } = require('./package.json');
@@ -30,6 +31,7 @@ class YouTubeAutomationAgent {
     this.isInitialized = false;
     this.activeJobs = new Map();
     this.operator = null;
+    this.autonomous = null;
     this.activation = null;
     this.telemetry = null;
     this.setupRequired = false;
@@ -46,6 +48,15 @@ class YouTubeAutomationAgent {
       await this.db.initialize();
       await this.db.markInterruptedJobs();
       this.operator = new OperatorService(this.db);
+      this.autonomous = new AutonomousChannelOperator(this.db, {
+        researchAndPlan: strategy => {
+          if (!this.agents.strategy) throw new Error('The strategy agent is not configured');
+          return this.agents.strategy.researchAndPlanChannel(strategy);
+        },
+        startGenerationJob: input => this.startGenerationJob(input),
+        waitForGenerationJob: jobId => this.waitForGenerationJob(jobId),
+        notify: notification => this.operator.notify(notification)
+      });
       this.activation = new ActivationMetrics(this.db);
       this.telemetry = new AnonymousTelemetry(this.db, this.logger);
       
@@ -80,7 +91,7 @@ class YouTubeAutomationAgent {
       // Initialize scheduler
       this.logger.info('Setting up automation scheduler...');
       this.scheduler = new DailyAutomation(this.agents, this.db, {
-        generateContent: input => this.startGenerationJob(input)
+        generateContent: input => this.queueScheduledContent(input)
       });
       await this.scheduler.initialize();
 
@@ -178,7 +189,8 @@ class YouTubeAutomationAgent {
     const value = {
       topic: null,
       style: null,
-      length: typeof body.length === 'string' ? body.length.toLowerCase() : 'medium'
+      length: typeof body.length === 'string' ? body.length.toLowerCase() : 'medium',
+      strategyContext: null
     };
 
     // JSON has no `undefined`, so clients send `null` to mean "no value provided".
@@ -226,7 +238,74 @@ class YouTubeAutomationAgent {
       return { valid: false, status: 400, error: 'length must be short, medium, or long' };
     }
 
+    if (body.strategyContext !== undefined && body.strategyContext !== null) {
+      if (typeof body.strategyContext !== 'object' || Array.isArray(body.strategyContext)) {
+        return { valid: false, status: 400, error: 'strategyContext must be an object' };
+      }
+      const limits = { angle: 500, rationale: 1000, audience: 500, objective: 1000, valueProposition: 1000, constraints: 2000 };
+      value.strategyContext = {};
+      for (const [key, max] of Object.entries(limits)) {
+        if (body.strategyContext[key] === undefined || body.strategyContext[key] === null) continue;
+        if (typeof body.strategyContext[key] !== 'string' || body.strategyContext[key].length > max) {
+          return { valid: false, status: 400, error: `strategyContext.${key} must be a string of ${max} characters or less` };
+        }
+        value.strategyContext[key] = body.strategyContext[key].trim();
+      }
+    }
+
     return { valid: true, value };
+  }
+
+  validateChannelStrategy(body = {}, current = {}) {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw new Error('Channel strategy must be a JSON object');
+    }
+    const text = (key, fallback, max) => {
+      const value = String(body[key] ?? fallback ?? '').trim();
+      if (value.length > max) throw new Error(`${key} must be ${max} characters or less`);
+      return value;
+    };
+    const objective = text('objective', current.objective, 1000);
+    const audience = text('audience', current.audience, 500);
+    if (!objective) throw new Error('A channel objective is required');
+    if (!audience) throw new Error('A target audience is required');
+
+    const rawPillars = body.contentPillars ?? current.contentPillars ?? [];
+    if (!Array.isArray(rawPillars)) throw new Error('contentPillars must be an array');
+    const contentPillars = rawPillars.map(value => String(value).trim()).filter(Boolean);
+    if (!contentPillars.length || contentPillars.length > 8 || contentPillars.some(value => value.length > 100)) {
+      throw new Error('Provide 1 to 8 content pillars, each 100 characters or less');
+    }
+
+    const integer = (key, fallback, min, max) => {
+      const value = Number(body[key] ?? fallback);
+      if (!Number.isInteger(value) || value < min || value > max) {
+        throw new Error(`${key} must be an integer from ${min} to ${max}`);
+      }
+      return value;
+    };
+    const defaultFormat = text('defaultFormat', current.default_format || 'explainer', 20).toLowerCase();
+    const defaultLength = text('defaultLength', current.default_length || 'medium', 20).toLowerCase();
+    const status = text('status', current.status || 'draft', 20).toLowerCase();
+    if (!['explainer', 'tutorial', 'list', 'review', 'story'].includes(defaultFormat)) {
+      throw new Error('defaultFormat is not supported');
+    }
+    if (!['short', 'medium', 'long'].includes(defaultLength)) throw new Error('defaultLength is not supported');
+    if (!['draft', 'active', 'paused'].includes(status)) throw new Error('status must be draft, active, or paused');
+
+    return {
+      objective,
+      audience,
+      valueProposition: text('valueProposition', current.value_proposition, 1000),
+      contentPillars,
+      cadencePerWeek: integer('cadencePerWeek', current.cadence_per_week || 1, 1, 7),
+      videosPerRun: integer('videosPerRun', current.videos_per_run || 1, 1, 5),
+      defaultFormat,
+      defaultLength,
+      successMetric: text('successMetric', current.success_metric, 300),
+      constraints: text('constraints', current.constraints, 2000),
+      status
+    };
   }
   setupAPI() {
     this.app.use(express.json({ limit: '1mb' }));
@@ -317,7 +396,7 @@ class YouTubeAutomationAgent {
 
     this.app.get('/api/dashboard', async (_req, res) => {
       try {
-        const [stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics, activation] = await Promise.all([
+        const [stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics, activation, channelStrategy, operatorRuns] = await Promise.all([
           this.db.getStats(),
           this.db.listGenerationJobs(20),
           this.db.getPipelineOverview(50),
@@ -332,18 +411,22 @@ class YouTubeAutomationAgent {
             : Promise.resolve({ totalVideos: 0, averagePerformanceScore: 0, topPerformers: [], insights: [] }),
           this.activation
             ? this.activation.getSummary()
-            : Promise.resolve({ privacy: 'local-only', counts: {}, milestones: {} })
+            : Promise.resolve({ privacy: 'local-only', counts: {}, milestones: {} }),
+          this.db.getChannelStrategy(),
+          this.db.listOperatorRuns(10)
         ]);
         if (this.telemetry) void this.telemetry.sync(activation);
         res.json({
           stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics, activation,
+          channelStrategy, operatorRuns,
           system: {
             initialized: this.isInitialized,
             setupRequired: this.setupRequired,
             uptime: process.uptime(),
             activeJobs: this.activeJobs.size,
             automationPaused: this.scheduler ? !this.scheduler.isEnabled : true,
-            agents: Object.keys(this.agents)
+            agents: Object.keys(this.agents),
+            autonomousRunning: Boolean(await this.db.getActiveOperatorRun())
           }
         });
       } catch (error) {
@@ -460,6 +543,49 @@ class YouTubeAutomationAgent {
       }
     });
 
+    this.app.put('/api/operator/strategy', protect, async (req, res) => {
+      try {
+        const current = await this.db.getChannelStrategy() || {};
+        const strategy = this.validateChannelStrategy(req.body || {}, current);
+        return res.json({ success: true, result: await this.db.saveChannelStrategy(strategy) });
+      } catch (error) {
+        return res.status(400).json({ success: false, error: error.message });
+      }
+    });
+
+    this.app.post('/api/operator/start', protect, async (req, res) => {
+      try {
+        if (this.setupRequired || !this.agents.strategy) {
+          return res.status(503).json({ success: false, error: 'Finish setup with npm run walkthrough before activating the autonomous operator' });
+        }
+        if (this.activeJobs.size) {
+          return res.status(409).json({ success: false, error: 'Wait for the current generation job to finish before starting an autonomous run' });
+        }
+        const current = await this.db.getChannelStrategy() || {};
+        const strategy = this.validateChannelStrategy({ ...(req.body || {}), status: 'active' }, current);
+        const saved = await this.db.saveChannelStrategy(strategy);
+        const run = await this.autonomous.start(saved);
+        return res.status(202).json({ success: true, result: run });
+      } catch (error) {
+        return res.status(error.status || 400).json({ success: false, error: error.message });
+      }
+    });
+
+    this.app.post('/api/operator/pause', protect, async (_req, res) => {
+      const strategy = await this.db.getChannelStrategy();
+      if (!strategy) return res.status(404).json({ error: 'Channel strategy not found' });
+      const active = await this.db.getActiveOperatorRun();
+      if (active) await this.autonomous.cancel(active.id);
+      const saved = await this.db.saveChannelStrategy({ ...strategy, status: 'paused' });
+      return res.json({ success: true, result: saved });
+    });
+
+    this.app.post('/api/operator/runs/:runId/cancel', protect, async (req, res) => {
+      const run = await this.autonomous.cancel(req.params.runId);
+      if (!run) return res.status(404).json({ error: 'Operator run not found' });
+      return res.json({ success: true, result: run });
+    });
+
     this.app.post('/api/ideas', protect, async (req, res) => {
       const topic = String(req.body?.topic || '').trim();
       if (!topic || topic.length > 200) return res.status(400).json({ error: 'A topic of 200 characters or less is required' });
@@ -542,10 +668,38 @@ class YouTubeAutomationAgent {
     return job;
   }
 
+  async waitForGenerationJob(jobId) {
+    const work = this.activeJobs.get(jobId);
+    if (work) await work;
+    const job = await this.db.getGenerationJob(jobId);
+    if (!job) throw new Error(`Generation job ${jobId} was not found after it ran`);
+    return job;
+  }
+
+  async queueScheduledContent(input = {}) {
+    const strategy = await this.db.getChannelStrategy();
+    if (strategy?.status === 'active') {
+      const weeklyOutput = await this.db.getRow(
+        `SELECT COUNT(*) AS count FROM generation_jobs
+         WHERE source = 'autonomous_operator' AND status = 'completed'
+         AND created_at >= datetime('now', '-7 days')`
+      );
+      const remaining = Math.max(1, strategy.cadence_per_week - Number(weeklyOutput?.count || 0));
+      return this.autonomous.start({
+        ...strategy,
+        videos_per_run: Math.min(strategy.videos_per_run, remaining)
+      });
+    }
+    return this.startGenerationJob(input);
+  }
+
   async runGenerationJob(jobId, input) {
     try {
       await this.db.updateGenerationJob(jobId, { status: 'running', stage: 'starting', progress: 2, error: null });
-      const result = await this.generateContent(input.topic, input.style, input.length, { jobId });
+      const result = await this.generateContent(input.topic, input.style, input.length, {
+        jobId,
+        strategyContext: input.strategyContext
+      });
       await this.db.updateGenerationJob(jobId, {
         status: 'completed',
         stage: result.reviewStatus === 'approved' ? 'scheduled' : result.reviewStatus,
@@ -589,7 +743,7 @@ class YouTubeAutomationAgent {
 
   async generateContent(topic = null, style = null, length = 'medium', options = {}) {
     this.logger.info('Starting content generation pipeline...');
-    const { jobId = null } = options;
+    const { jobId = null, strategyContext = {} } = options;
     const profile = await this.db.getChannelProfile() || {};
     const lengthLabels = { short: '2-4 minutes', medium: '8-12 minutes', long: '15-20 minutes' };
 
@@ -604,9 +758,13 @@ class YouTubeAutomationAgent {
     strategy.requestedStyle = requestedStyle;
     strategy.requestedLengthKey = length;
     strategy.requestedLength = lengthLabels[length] || lengthLabels.medium;
-    strategy.targetAudience = profile.target_audience || strategy.targetAudience;
+    strategy.angle = strategyContext.angle || strategy.angle;
+    strategy.planRationale = strategyContext.rationale || null;
+    strategy.targetAudience = strategyContext.audience || profile.target_audience || strategy.targetAudience;
     strategy.brandVoice = profile.brand_voice || null;
-    strategy.channelGoal = profile.goal || null;
+    strategy.channelGoal = strategyContext.objective || profile.goal || null;
+    strategy.channelValueProposition = strategyContext.valueProposition || null;
+    strategy.channelConstraints = strategyContext.constraints || null;
     strategy.callToAction = profile.call_to_action || null;
     this.logger.info(`Strategy generated: ${strategy.topic}`);
 

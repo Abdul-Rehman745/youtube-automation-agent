@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added a persistent Autonomous Channel Operator that turns a channel objective, audience, pillars, cadence, and guardrails into researched editorial plans and sequential end-to-end production runs
+- Added dashboard strategy controls, operator-run progress and cancellation, scheduled strategy execution, and approval-gated publishing handoff
 - Added local-only activation milestones for setup, first real MP4, approval, publication, and repeat generation
 - Added an explicit opt-in anonymous milestone reporter with no default endpoint
 - Added reproducible GitHub growth baselines and public fork census reports

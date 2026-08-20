@@ -248,6 +248,39 @@ class Database {
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       )`,
+      `CREATE TABLE IF NOT EXISTS channel_strategies (
+        id TEXT PRIMARY KEY,
+        objective TEXT NOT NULL,
+        audience TEXT NOT NULL,
+        value_proposition TEXT,
+        content_pillars TEXT NOT NULL,
+        cadence_per_week INTEGER DEFAULT 1,
+        videos_per_run INTEGER DEFAULT 1,
+        default_format TEXT DEFAULT 'explainer',
+        default_length TEXT DEFAULT 'medium',
+        success_metric TEXT,
+        constraints TEXT,
+        status TEXT DEFAULT 'draft',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`,
+      `CREATE TABLE IF NOT EXISTS operator_runs (
+        id TEXT PRIMARY KEY,
+        strategy_id TEXT NOT NULL,
+        status TEXT DEFAULT 'queued',
+        stage TEXT DEFAULT 'queued',
+        progress INTEGER DEFAULT 0,
+        research TEXT,
+        plan TEXT,
+        generated_jobs TEXT,
+        summary TEXT,
+        error TEXT,
+        cancel_requested INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        completed_at TEXT,
+        FOREIGN KEY (strategy_id) REFERENCES channel_strategies(id)
+      )`,
       `CREATE TABLE IF NOT EXISTS notifications (
         id TEXT PRIMARY KEY,
         type TEXT NOT NULL,
@@ -602,6 +635,11 @@ class Database {
        error = 'The application restarted before this job finished', updated_at = datetime('now'),
        completed_at = datetime('now') WHERE status IN ('queued', 'running')`
     );
+    await this.executeQuery(
+      `UPDATE operator_runs SET status = 'interrupted', stage = 'interrupted',
+       error = 'The application restarted before this operator run finished', updated_at = datetime('now'),
+       completed_at = datetime('now') WHERE status IN ('queued', 'running', 'cancelling')`
+    );
   }
 
   async saveContentReview(productionId, review = {}) {
@@ -684,6 +722,113 @@ class Database {
       ]
     );
     return this.getRow('SELECT * FROM content_ideas WHERE id = ?', [id]);
+  }
+
+  async getChannelStrategy() {
+    const row = await this.getRow("SELECT * FROM channel_strategies WHERE id = 'default'");
+    return row ? this.deserializeChannelStrategy(row) : null;
+  }
+
+  async saveChannelStrategy(strategy) {
+    const current = await this.getChannelStrategy() || {};
+    await this.executeQuery(
+      `INSERT INTO channel_strategies (
+        id, objective, audience, value_proposition, content_pillars, cadence_per_week,
+        videos_per_run, default_format, default_length, success_metric, constraints,
+        status, created_at, updated_at
+      ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET
+        objective = excluded.objective, audience = excluded.audience,
+        value_proposition = excluded.value_proposition, content_pillars = excluded.content_pillars,
+        cadence_per_week = excluded.cadence_per_week, videos_per_run = excluded.videos_per_run,
+        default_format = excluded.default_format, default_length = excluded.default_length,
+        success_metric = excluded.success_metric, constraints = excluded.constraints,
+        status = excluded.status, updated_at = datetime('now')`,
+      [
+        strategy.objective ?? current.objective ?? '',
+        strategy.audience ?? current.audience ?? '',
+        strategy.valueProposition ?? current.value_proposition ?? '',
+        JSON.stringify(strategy.contentPillars ?? current.contentPillars ?? []),
+        strategy.cadencePerWeek ?? current.cadence_per_week ?? 1,
+        strategy.videosPerRun ?? current.videos_per_run ?? 1,
+        strategy.defaultFormat ?? current.default_format ?? 'explainer',
+        strategy.defaultLength ?? current.default_length ?? 'medium',
+        strategy.successMetric ?? current.success_metric ?? '',
+        strategy.constraints ?? current.constraints ?? '',
+        strategy.status ?? current.status ?? 'draft',
+        current.created_at || null
+      ]
+    );
+    return this.getChannelStrategy();
+  }
+
+  deserializeChannelStrategy(row) {
+    return {
+      ...row,
+      contentPillars: JSON.parse(row.content_pillars || '[]')
+    };
+  }
+
+  async createOperatorRun(strategyId = 'default') {
+    const id = this.generateId('operator');
+    await this.executeQuery(
+      `INSERT INTO operator_runs (id, strategy_id, research, plan, generated_jobs, summary)
+       VALUES (?, ?, '{}', '[]', '[]', '{}')`,
+      [id, strategyId]
+    );
+    return this.getOperatorRun(id);
+  }
+
+  async getOperatorRun(id) {
+    const row = await this.getRow('SELECT * FROM operator_runs WHERE id = ?', [id]);
+    return row ? this.deserializeOperatorRun(row) : null;
+  }
+
+  async getActiveOperatorRun() {
+    const row = await this.getRow(
+      "SELECT * FROM operator_runs WHERE status IN ('queued', 'running', 'cancelling') ORDER BY created_at DESC LIMIT 1"
+    );
+    return row ? this.deserializeOperatorRun(row) : null;
+  }
+
+  async listOperatorRuns(limit = 10) {
+    const rows = await this.getAllRows('SELECT * FROM operator_runs ORDER BY created_at DESC LIMIT ?', [limit]);
+    return rows.map(row => this.deserializeOperatorRun(row));
+  }
+
+  async updateOperatorRun(id, changes = {}) {
+    const current = await this.getOperatorRun(id);
+    if (!current) return null;
+    await this.executeQuery(
+      `UPDATE operator_runs SET status = ?, stage = ?, progress = ?, research = ?, plan = ?,
+       generated_jobs = ?, summary = ?, error = ?, cancel_requested = ?,
+       updated_at = datetime('now'), completed_at = ? WHERE id = ?`,
+      [
+        changes.status ?? current.status,
+        changes.stage ?? current.stage,
+        changes.progress ?? current.progress,
+        JSON.stringify(changes.research ?? current.research ?? {}),
+        JSON.stringify(changes.plan ?? current.plan ?? []),
+        JSON.stringify(changes.generatedJobs ?? current.generatedJobs ?? []),
+        JSON.stringify(changes.summary ?? current.summary ?? {}),
+        changes.error === undefined ? current.error : changes.error,
+        changes.cancelRequested === undefined ? current.cancel_requested : Number(changes.cancelRequested),
+        changes.completedAt === undefined ? current.completed_at : changes.completedAt,
+        id
+      ]
+    );
+    return this.getOperatorRun(id);
+  }
+
+  deserializeOperatorRun(row) {
+    return {
+      ...row,
+      research: JSON.parse(row.research || '{}'),
+      plan: JSON.parse(row.plan || '[]'),
+      generatedJobs: JSON.parse(row.generated_jobs || '[]'),
+      summary: JSON.parse(row.summary || '{}'),
+      cancelRequested: Boolean(row.cancel_requested)
+    };
   }
 
   async createNotification(notification) {

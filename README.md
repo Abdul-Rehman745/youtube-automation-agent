@@ -10,6 +10,7 @@ Research topics → write scripts → generate narration and visuals → assembl
 
 - **Self-hosted:** your credentials, media, and channel data stay under your control.
 - **Approval-first:** nothing is scheduled until quality, rights, and human-review gates pass by default.
+- **Strategy-driven:** give the Autonomous Channel Operator an objective, audience, pillars, cadence, and guardrails; it turns them into researched content plans and production runs.
 - **Provider-flexible:** use Gemini, OpenAI, OpenRouter, Kimi, MiMo, GLM, or another OpenAI-compatible endpoint.
 - **Observable:** follow persistent generation jobs, failures, review state, publishing, and local activation milestones from the dashboard.
 
@@ -38,6 +39,14 @@ Already know what you are doing? `npm run setup` offers a shorter classic flow, 
 
 Gemini offers free access for supported text and TTS usage. Gemini AI image generation currently requires paid-tier access; without an image provider, Lumen can assemble gradient-based visuals instead.
 
+### Run the Autonomous Channel Operator
+
+Open **Autonomous operator** in the dashboard and describe the channel outcome—not a task list. Set the objective, audience, content pillars, publishing cadence, success metric, and boundaries, then choose **Activate & run now**.
+
+Lumen refreshes YouTube trend and configured-competitor signals, checks recent channel topics, creates an evidence-labeled editorial plan, and sends each planned video through strategy, script, thumbnail, SEO, production, and workflow management. Active strategies also guide scheduled generation at the requested weekly cadence. Operator runs, decisions, progress, and failures persist in SQLite and remain visible in the dashboard.
+
+By default, finished videos wait for factual review, media-rights confirmation, and approval. Once approved, the existing publishing agent schedules and uploads them. Turning on autonomy does not bypass those gates, and simulated videos still cannot publish.
+
 ## From idea to published video
 
 | Stage | What Lumen does | What you control |
@@ -57,14 +66,17 @@ For release history, see [CHANGELOG.md](CHANGELOG.md).
 
 ```mermaid
 graph TD
-    A[Content Strategy Agent] --> B[Script Writer Agent]
-    B --> C[Thumbnail Designer Agent]
-    B --> D[SEO Optimizer Agent]
-    C --> E[Production Management Agent]
-    D --> E
-    E --> F[Publishing & Scheduling Agent]
-    F --> G[Analytics & Optimization Agent]
-    G -->|feedback loop| A
+    O[Autonomous Channel Operator] --> A[Research and Editorial Plan]
+    A --> B[Content Strategy Agent]
+    B --> C[Script Writer Agent]
+    C --> D[Thumbnail Designer Agent]
+    C --> E[SEO Optimizer Agent]
+    D --> F[Production Management Agent]
+    E --> F
+    F --> G[Review and Approval Gates]
+    G --> H[Publishing & Scheduling Agent]
+    H --> I[Analytics & Optimization Agent]
+    I -->|feedback loop| A
 ```
 
 ## How It Works
@@ -207,6 +219,8 @@ gantt
 
 The scheduler runs automatically after `npm start`. Content generation at 06:00, publishing queue processed every 15 minutes, analytics at 09:00, optimization at 22:00. Weekly strategy reviews run on Sundays.
 
+When an active channel strategy exists, the 06:00 generation check uses its cadence and launches an autonomous research-and-production run when the content buffer needs work. Without an active strategy, the original topic-selection flow remains in place.
+
 ## API
 
 ```bash
@@ -221,6 +235,18 @@ curl -X POST http://localhost:3456/generate \
 
 # inspect the returned background job
 curl http://localhost:3456/api/jobs/:jobId
+
+# save a channel strategy
+curl -X PUT http://localhost:3456/api/operator/strategy \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $API_KEY" \
+  -d '{"objective":"Own practical AI automation for small teams","audience":"Small business operators","contentPillars":["AI workflows","Automation playbooks"],"cadencePerWeek":2,"videosPerRun":2,"defaultFormat":"tutorial","defaultLength":"medium","status":"draft"}'
+
+# activate the saved strategy and start a background operator run
+curl -X POST http://localhost:3456/api/operator/start \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $API_KEY" \
+  -d '{}'
 
 # view schedule
 curl http://localhost:3456/schedule
@@ -310,7 +336,7 @@ youtube-automation-agent/
 ├── database/        # SQLite schema and access layer
 ├── data/            # generated content and assets
 ├── schedules/       # cron-based automation
-├── utils/           # AI service wrappers, logging, credential management
+├── utils/           # AI services, autonomous operator, logging, credential management
 ├── .github/         # CI workflow (lint + tests on every push/PR)
 └── index.js         # Express server + agent initialization
 ```

@@ -21,6 +21,7 @@ class SystemTest {
       { name: 'Local Activation Metrics', test: () => this.testActivationMetrics() },
       { name: 'Anonymous Telemetry Opt-in', test: () => this.testAnonymousTelemetryOptIn() },
       { name: 'Operator Workflow API', test: () => this.testOperatorWorkflowAPI() },
+      { name: 'Autonomous Channel Operator', test: () => this.testAutonomousChannelOperator() },
       { name: 'API Validation and Security', test: () => this.testAPIValidationAndSecurity() },
       { name: 'Publishing Safety', test: () => this.testPublishingSafety() },
       { name: 'Multi-Provider Credential Validation', test: () => this.testCredentialValidation() },
@@ -287,9 +288,18 @@ class SystemTest {
         !response.ok ||
         !Array.isArray(dashboard.jobs) ||
         !Array.isArray(dashboard.pipeline) ||
+        !Array.isArray(dashboard.operatorRuns) ||
         dashboard.activation?.privacy !== 'local-only'
       ) {
         throw new Error('Operator dashboard API did not return its data contract');
+      }
+      const unavailableStart = await fetch(`http://127.0.0.1:${port}/api/operator/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}'
+      });
+      if (unavailableStart.status !== 503) {
+        throw new Error('Autonomous operator did not fail closed when its strategy agent was unavailable');
       }
     } finally {
       if (server) await new Promise(resolve => server.close(resolve));
@@ -298,6 +308,97 @@ class SystemTest {
     }
 
     this.logger.info('Operator workflow API test completed successfully');
+  }
+
+  async testAutonomousChannelOperator() {
+    const { ContentStrategyAgent } = require('./agents/content-strategy-agent');
+    const { AutonomousChannelOperator } = require('./utils/autonomous-channel-operator');
+    const db = new Database();
+    await db.initialize();
+    const previousStrategy = await db.getChannelStrategy();
+    let run;
+
+    try {
+      const strategy = await db.saveChannelStrategy({
+        objective: 'Teach small teams to automate useful work',
+        audience: 'Small business operators',
+        valueProposition: 'Practical steps without hype',
+        contentPillars: ['AI workflows', 'Automation playbooks'],
+        cadencePerWeek: 2,
+        videosPerRun: 2,
+        defaultFormat: 'tutorial',
+        defaultLength: 'short',
+        successMetric: 'Returning viewers',
+        constraints: 'Do not invent statistics',
+        status: 'active'
+      });
+      if (strategy.contentPillars.length !== 2 || strategy.cadence_per_week !== 2) {
+        throw new Error('Channel strategy was not persisted correctly');
+      }
+
+      const strategyAgent = new ContentStrategyAgent(db, {});
+      strategyAgent.analyzeTrends = async function() {
+        this.trendingTopics = [{ topic: 'practical AI workflows', score: 8, sources: ['trending'] }];
+        this.competitorData = [];
+      };
+      const planned = await strategyAgent.researchAndPlanChannel(strategy);
+      if (planned.plan.length !== 2 || !planned.research.sources.includes('YouTube most-popular videos')) {
+        throw new Error('Strategy did not produce an evidence-labeled autonomous plan');
+      }
+
+      const receivedInputs = [];
+      const operator = new AutonomousChannelOperator(db, {
+        researchAndPlan: async () => planned,
+        startGenerationJob: async input => {
+          receivedInputs.push(input);
+          return { id: `fake-job-${receivedInputs.length}` };
+        },
+        waitForGenerationJob: async jobId => ({
+          id: jobId,
+          status: 'completed',
+          production_id: `production-${jobId}`,
+          details: { reviewStatus: 'needs_review' }
+        })
+      });
+      run = await operator.start(strategy);
+      await operator.activeRuns.get(run.id);
+      const completed = await db.getOperatorRun(run.id);
+      if (
+        completed.status !== 'waiting_review' ||
+        completed.generatedJobs.length !== 2 ||
+        receivedInputs.some(input => input.source !== 'autonomous_operator' || !input.strategyContext?.angle)
+      ) {
+        throw new Error('Autonomous operator did not execute the planned workflow');
+      }
+    } finally {
+      if (run) {
+        const stored = await db.getOperatorRun(run.id);
+        for (const item of stored?.generatedJobs || []) {
+          if (item.ideaId) await db.executeQuery('DELETE FROM content_ideas WHERE id = ?', [item.ideaId]);
+        }
+        await db.executeQuery('DELETE FROM operator_runs WHERE id = ?', [run.id]);
+      }
+      if (previousStrategy) {
+        await db.saveChannelStrategy({
+          objective: previousStrategy.objective,
+          audience: previousStrategy.audience,
+          valueProposition: previousStrategy.value_proposition,
+          contentPillars: previousStrategy.contentPillars,
+          cadencePerWeek: previousStrategy.cadence_per_week,
+          videosPerRun: previousStrategy.videos_per_run,
+          defaultFormat: previousStrategy.default_format,
+          defaultLength: previousStrategy.default_length,
+          successMetric: previousStrategy.success_metric,
+          constraints: previousStrategy.constraints,
+          status: previousStrategy.status
+        });
+      } else {
+        await db.executeQuery("DELETE FROM channel_strategies WHERE id = 'default'");
+      }
+      await db.close();
+    }
+
+    this.logger.info('Autonomous channel operator test completed successfully');
   }
 
   async testAPIValidationAndSecurity() {

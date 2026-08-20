@@ -125,6 +125,9 @@ Tone: ${template.tone}
 Pacing: ${template.pacing}
 Brand voice: ${strategy.brandVoice || 'clear, credible, and engaging'}
 Channel goal: ${strategy.channelGoal || 'help the viewer understand and act'}
+Channel value proposition: ${strategy.channelValueProposition || 'give the viewer practical value'}
+Editorial rationale: ${strategy.planRationale || 'fit the selected topic and audience'}
+Channel constraints: ${strategy.channelConstraints || 'none beyond the factual-safety rules below'}
 Preferred call to action: ${strategy.callToAction || 'invite the viewer to subscribe'}
 Keywords: ${(strategy.keywords || []).join(', ')}
 Avoid fabricated statistics, unsupported claims, and fake urgency.`;

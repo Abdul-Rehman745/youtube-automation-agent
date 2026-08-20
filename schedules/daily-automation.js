@@ -176,8 +176,24 @@ class DailyAutomation {
     }
 
     // Check posting frequency settings
-    const frequency = await this.db.getSetting('posting_frequency') || 'daily';
     const lastGeneration = await this.db.getSetting('last_content_generation');
+    const channelStrategy = this.db.getChannelStrategy ? await this.db.getChannelStrategy() : null;
+
+    if (channelStrategy?.status === 'active') {
+      const weeklyOutput = await this.db.getRow(
+        `SELECT COUNT(*) AS count FROM generation_jobs
+         WHERE source = 'autonomous_operator' AND status = 'completed'
+         AND created_at >= datetime('now', '-7 days')`
+      );
+      if (Number(weeklyOutput?.count || 0) >= channelStrategy.cadence_per_week) return false;
+      if (!lastGeneration) return true;
+      const daysSinceLastGeneration = Math.floor(
+        (new Date() - new Date(lastGeneration)) / (1000 * 60 * 60 * 24)
+      );
+      return daysSinceLastGeneration >= 1;
+    }
+
+    const frequency = await this.db.getSetting('posting_frequency') || 'daily';
     
     if (lastGeneration) {
       const lastDate = new Date(lastGeneration);

@@ -16,6 +16,7 @@
       </a>
       <nav aria-label="Main navigation">
         <button class="nav-item active" data-view="overview"><span>⌂</span> Overview</button>
+        <button class="nav-item" data-view="operator"><span>◎</span> Autonomous operator</button>
         <button class="nav-item" data-view="pipeline"><span>≋</span> Pipeline <b id="review-badge" class="badge hidden">0</b></button>
         <button class="nav-item" data-view="calendar"><span>□</span> Calendar & ideas</button>
         <button class="nav-item" data-view="analytics"><span>⌁</span> Analytics</button>
@@ -71,6 +72,39 @@
             <div class="panel-heading"><div><p class="eyebrow">INBOX</p><h2>Recent activity</h2></div></div>
             <div id="notification-list" class="activity-list"></div>
           </article>
+        </div>
+      </section>
+
+      <section id="operator-view" class="view">
+        <div class="section-intro"><div><h2>Autonomous Channel Operator</h2><p>Set the destination once. Lumen researches, plans, produces, and manages the channel workflow around it.</p></div><span id="operator-strategy-status" class="status">Not configured</span></div>
+        <div class="operator-grid">
+          <form id="strategy-form" class="panel settings-form">
+            <div class="panel-heading"><div><p class="eyebrow">CHANNEL MANDATE</p><h2>What should this channel achieve?</h2></div></div>
+            <div class="form-grid">
+              <label class="full-row"><span>Objective</span><textarea name="objective" rows="3" maxlength="1000" placeholder="Become the most trusted practical channel for small businesses adopting AI." required></textarea></label>
+              <label class="full-row"><span>Audience</span><textarea name="audience" rows="2" maxlength="500" placeholder="Owners and operators at 5–50 person service businesses" required></textarea></label>
+              <label class="full-row"><span>Value proposition</span><textarea name="valueProposition" rows="2" maxlength="1000" placeholder="Clear, tested advice viewers can apply this week"></textarea></label>
+              <label class="full-row"><span>Content pillars</span><input name="contentPillars" placeholder="AI workflows, automation playbooks, tool reviews" required><small>Separate 1–8 durable themes with commas.</small></label>
+              <label><span>Videos per week</span><input name="cadencePerWeek" type="number" min="1" max="7" value="1"></label>
+              <label><span>Videos per planning run</span><input name="videosPerRun" type="number" min="1" max="5" value="1"></label>
+              <label><span>Default format</span><select name="defaultFormat"><option value="explainer">Explainer</option><option value="tutorial">Tutorial</option><option value="list">List</option><option value="review">Review</option><option value="story">Story</option></select></label>
+              <label><span>Default length</span><select name="defaultLength"><option value="short">Short · 2–4 min</option><option value="medium">Medium · 8–12 min</option><option value="long">Long · 15–20 min</option></select></label>
+              <label class="full-row"><span>Success metric</span><input name="successMetric" maxlength="300" placeholder="Qualified subscribers and returning viewers"></label>
+              <label class="full-row"><span>Boundaries and constraints</span><textarea name="constraints" rows="3" maxlength="2000" placeholder="No hype, no unverified statistics, explain costs and tradeoffs."></textarea></label>
+            </div>
+            <p class="callout">The operator uses YouTube trend signals, configured competitors, and channel history. Publishing still obeys your quality, factual-review, rights, and approval gates.</p>
+            <div class="form-actions"><button type="submit" class="button secondary">Save strategy</button><button id="activate-operator-button" type="button" class="button primary">Activate & run now</button><button id="pause-operator-button" type="button" class="button danger hidden">Pause operator</button></div>
+          </form>
+          <div class="operator-side">
+            <article class="panel">
+              <div class="panel-heading"><div><p class="eyebrow">CURRENT RUN</p><h2 id="operator-run-title">Waiting for a strategy</h2></div><button id="cancel-operator-run" class="text-button hidden">Stop run</button></div>
+              <div id="operator-run-summary"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-heading"><div><p class="eyebrow">EDITORIAL PLAN</p><h2>What Lumen decided to make</h2></div></div>
+              <div id="operator-plan" class="plan-list"></div>
+            </article>
+          </div>
         </div>
       </section>
 
