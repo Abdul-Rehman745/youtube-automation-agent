@@ -322,6 +322,15 @@ class Database {
         status TEXT DEFAULT 'unread',
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
       )`,
+      `CREATE TABLE IF NOT EXISTS readiness_runs (
+        id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        checks TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`,
             // System Settings
       `CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
@@ -1266,6 +1275,43 @@ class Database {
       settings[row.key] = row.value;
       return settings;
     }, {});
+  }
+
+  // Production readiness
+  async saveReadinessRun(run) {
+    await this.executeQuery(
+      `INSERT OR REPLACE INTO readiness_runs (
+        id, status, checks, summary, started_at, completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        run.id,
+        run.status,
+        JSON.stringify(run.checks || []),
+        JSON.stringify(run.summary || {}),
+        run.startedAt,
+        run.completedAt
+      ]
+    );
+    return this.getReadinessRun(run.id);
+  }
+
+  async getReadinessRun(id) {
+    const row = await this.getRow('SELECT * FROM readiness_runs WHERE id = ?', [id]);
+    return this.parseReadinessRun(row);
+  }
+
+  async getLatestReadinessRun() {
+    const row = await this.getRow('SELECT * FROM readiness_runs ORDER BY completed_at DESC LIMIT 1');
+    return this.parseReadinessRun(row);
+  }
+
+  parseReadinessRun(row) {
+    if (!row) return null;
+    return {
+      ...row,
+      checks: JSON.parse(row.checks || '[]'),
+      summary: JSON.parse(row.summary || '{}')
+    };
   }
 
   // Utility methods

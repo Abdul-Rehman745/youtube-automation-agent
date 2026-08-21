@@ -83,7 +83,8 @@ h2 { letter-spacing: -.025em; margin-bottom: 0; }
 .status { display: inline-flex; align-items: center; border-radius: 999px; padding: 4px 8px; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; background: rgba(114,165,255,.12); color: var(--blue); }
 .status.needs_review, .status.queued { color: var(--amber); background: rgba(245,185,68,.12); }
 .status.needs_attention, .status.failed, .status.rejected { color: #ff8994; background: var(--red-soft); }
-.status.approved, .status.scheduled, .status.published, .status.completed { color: var(--green); background: rgba(72,213,151,.12); }
+.status.approved, .status.scheduled, .status.published, .status.completed, .status.passed { color: var(--green); background: rgba(72,213,151,.12); }
+.status.warning, .status.skipped, .status.unverified { color: var(--amber); background: rgba(245,185,68,.12); }
 .progress { height: 5px; border-radius: 99px; background: #262c35; margin-top: 9px; overflow: hidden; }
 .progress i { display: block; height: 100%; background: var(--red); border-radius: inherit; }
 .activity { display: grid; grid-template-columns: 8px 1fr auto; gap: 10px; align-items: start; }
@@ -154,6 +155,25 @@ label small { color: var(--muted); font-weight: 400; }
 .callout { background: rgba(114,165,255,.08); border: 1px solid rgba(114,165,255,.18); padding: 12px; border-radius: 10px; color: #b9d0fb; font-size: 12px; margin: 0; }
 .activation-panel { margin-top: 18px; }
 .activation-panel .callout { margin-bottom: 14px; }
+.readiness-hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, .42fr); gap: 28px; align-items: center; margin-bottom: 18px; }
+.readiness-hero h2 { font-size: 25px; margin: 5px 0 8px; }
+.readiness-hero p:not(.eyebrow) { color: var(--muted); line-height: 1.55; max-width: 760px; }
+.readiness-actions { display: grid; gap: 11px; padding: 16px; border: 1px solid var(--line); background: rgba(255,255,255,.018); border-radius: 12px; }
+.readiness-actions small { color: var(--muted); line-height: 1.45; }
+.readiness-actions .paid-probe { font-size: 11px; }
+.readiness-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.readiness-check { border: 1px solid var(--line); background: var(--panel); border-radius: 13px; padding: 17px; min-height: 180px; }
+.readiness-check.passed { border-color: rgba(72,213,151,.26); }
+.readiness-check.failed { border-color: rgba(255,87,98,.34); }
+.readiness-check.warning, .readiness-check.skipped { border-color: rgba(245,185,68,.28); }
+.readiness-check-heading { display: flex; gap: 11px; align-items: center; }
+.readiness-icon { display: grid; place-items: center; width: 31px; height: 31px; flex: 0 0 31px; border-radius: 50%; background: rgba(114,165,255,.1); color: var(--blue); font-weight: 900; }
+.readiness-check.passed .readiness-icon { color: var(--green); background: rgba(72,213,151,.12); }
+.readiness-check.failed .readiness-icon { color: #ff8994; background: var(--red-soft); }
+.readiness-check.warning .readiness-icon, .readiness-check.skipped .readiness-icon { color: var(--amber); background: rgba(245,185,68,.12); }
+.readiness-check p { color: var(--muted); font-size: 12px; line-height: 1.55; margin: 15px 0 12px; }
+.readiness-check > small { display: block; color: #b9c2cf; font-size: 11px; line-height: 1.5; }
+.readiness-policy { margin-top: 18px; }
 .timeline-dot { width: 10px; height: 10px; flex: 0 0 10px; border-radius: 50%; border: 2px solid var(--muted); }
 .timeline-dot.done { border-color: var(--green); background: var(--green); box-shadow: 0 0 0 4px rgba(72, 213, 151, .1); }
 .activation-share { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; padding-top: 4px; }
@@ -190,7 +210,7 @@ label small { color: var(--muted); font-weight: 400; }
   main { padding: 0 18px 60px; }
   .loading-bar { left: 0; }
   .stats-grid { grid-template-columns: 1fr 1fr; }
-  .overview-grid, .overview-grid.lower, .calendar-grid, .content-layout, .operator-grid, .learning-grid { grid-template-columns: 1fr; }
+  .overview-grid, .overview-grid.lower, .calendar-grid, .content-layout, .operator-grid, .learning-grid, .readiness-hero, .readiness-grid { grid-template-columns: 1fr; }
   .pipeline-item { grid-template-columns: 1fr auto; }
   .pipeline-col { display: none; }
 }

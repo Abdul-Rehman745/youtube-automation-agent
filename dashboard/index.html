@@ -20,6 +20,7 @@
         <button class="nav-item" data-view="pipeline"><span>≋</span> Pipeline <b id="review-badge" class="badge hidden">0</b></button>
         <button class="nav-item" data-view="calendar"><span>□</span> Calendar & ideas</button>
         <button class="nav-item" data-view="analytics"><span>⌁</span> Analytics</button>
+        <button class="nav-item" data-view="readiness"><span>✓</span> Production readiness</button>
         <button class="nav-item" data-view="settings"><span>⚙</span> Channel setup</button>
       </nav>
       <div class="sidebar-footer">
@@ -141,6 +142,28 @@
         </div>
         <article class="panel"><div class="panel-heading"><div><p class="eyebrow">TOP PERFORMERS</p><h2>What is working</h2></div></div><div id="top-performers" class="card-list"></div></article>
         <article class="panel activation-panel"><div class="panel-heading"><div><p class="eyebrow">LOCAL ACTIVATION</p><h2>First-run journey</h2></div></div><p class="callout">Calculated locally from your database and video files. Nothing is transmitted unless anonymous telemetry is explicitly enabled.</p><div id="activation-list" class="timeline"></div></article>
+      </section>
+
+      <section id="readiness-view" class="view">
+        <div class="section-intro readiness-intro">
+          <div><h2>Production readiness</h2><p>Verify the real path from providers to a publishable YouTube upload before autonomy spends time or credits.</p></div>
+          <span id="readiness-status" class="status unverified">Unverified</span>
+        </div>
+        <article class="panel readiness-hero">
+          <div>
+            <p class="eyebrow">VERIFIED DRY RUN</p>
+            <h2 id="readiness-title">Prove the pipeline, without uploading.</h2>
+            <p id="readiness-summary">The check makes small live text and narration requests, verifies channel access, builds a local audio/video MP4, and validates queued metadata. It never creates or uploads a YouTube video.</p>
+            <div id="readiness-meta" class="meta-line">No readiness run recorded.</div>
+          </div>
+          <div class="readiness-actions">
+            <label class="toggle paid-probe"><input id="paid-image-probe" type="checkbox"><span></span> Include paid image probe</label>
+            <button id="run-readiness-button" class="button primary">Run verified check</button>
+            <small>Live provider probes can consume a small amount of quota or credits.</small>
+          </div>
+        </article>
+        <div id="readiness-checks" class="readiness-grid"></div>
+        <p class="callout readiness-policy">A recorded blocking failure stops autonomous generation and publishing until a later run passes. An unverified or stale result remains visible but does not interrupt manual work.</p>
       </section>
 
       <section id="settings-view" class="view">

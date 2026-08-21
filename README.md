@@ -8,6 +8,17 @@ Research topics → write scripts → generate narration and visuals → assembl
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js 18+](https://img.shields.io/badge/node-18%2B-43853d.svg)](package.json)
 
+## What's new in version 2.6.0
+
+Version 2.6 turns the agent into a safer, self-improving channel operator:
+
+- **Autonomous Channel Operator:** define the audience, objective, content pillars, cadence, and guardrails once; the agent researches, plans, and runs the production workflow.
+- **Closed-loop channel learning:** real 24-hour and 7-day analytics become evidence-backed recommendations that influence future plans only after you approve them.
+- **Production Readiness Gate:** verify text, narration, FFmpeg, YouTube access, and upload metadata before autonomous production or publishing begins.
+- **Safer packaging experiments:** review and select title and thumbnail variants without silently changing live YouTube metadata.
+
+See the complete release history in [CHANGELOG.md](CHANGELOG.md).
+
 - **Self-hosted:** your credentials, media, and channel data stay under your control.
 - **Approval-first:** nothing is scheduled until quality, rights, and human-review gates pass by default.
 - **Strategy-driven:** give the Autonomous Channel Operator an objective, audience, pillars, cadence, and guardrails; it turns them into researched content plans and production runs.
@@ -29,6 +40,14 @@ npm start
 Open `http://localhost:3456`. The walkthrough explains each provider choice, tests credentials, and guides YouTube authorization.
 
 Already know what you are doing? `npm run setup` offers a shorter classic flow, and `.env.example` documents every setting.
+
+### Verify production readiness
+
+Before activating autonomous production, open **Production readiness** in the dashboard and choose **Run verified check**. The gate makes small live text and narration requests, verifies access to the connected YouTube channel, creates and decodes a temporary MP4 containing audio and video, and validates every queued upload's metadata. It never creates or uploads a YouTube video, and temporary probe assets are deleted after the run.
+
+AI image generation can incur a larger provider charge, so its live probe is a separate opt-in checkbox. Without that checkbox, image configuration is reported as verified, skipped, or using the built-in gradient fallback without making a paid image request.
+
+Results persist locally in SQLite with exact remediation steps. A recorded blocking failure stops autonomous generation and publishing until a later run passes; manual work remains available when readiness has never been checked or the last result is older than 24 hours.
 
 ### What you need
 
@@ -245,6 +264,15 @@ curl -X POST http://localhost:3456/generate \
 
 # inspect the returned background job
 curl http://localhost:3456/api/jobs/:jobId
+
+# inspect the latest production-readiness evidence
+curl http://localhost:3456/api/readiness
+
+# run harmless live probes; add {"includePaidMedia":true} only to test paid image generation
+curl -X POST http://localhost:3456/api/readiness/run \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $API_KEY" \
+  -d '{"includePaidMedia":false}'
 
 # save a channel strategy
 curl -X PUT http://localhost:3456/api/operator/strategy \

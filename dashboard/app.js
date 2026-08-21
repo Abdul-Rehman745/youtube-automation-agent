@@ -137,8 +137,39 @@ function renderDashboard() {
   renderIdeas(state.ideas);
   renderAnalytics(state.analytics, state.learning);
   renderActivation(state.activation);
-  renderOperator(state.channelStrategy, state.operatorRuns || [], state.system);
+  renderReadiness(state.readiness);
+  renderOperator(state.channelStrategy, state.operatorRuns || [], { ...state.system, readiness: state.readiness });
   populateSettings(state.profile, state.settings);
+}
+
+function renderReadiness(readiness = {}) {
+  const status = readiness.status || 'unverified';
+  const statusNode = $('#readiness-status');
+  statusNode.className = `status ${escapeHTML(status)}`;
+  statusNode.textContent = readiness.stale && status !== 'unverified' ? `${label(status)} · stale` : label(status);
+
+  const titles = {
+    passed: 'The production path is verified.',
+    warning: 'Core checks passed with warnings.',
+    failed: 'Automation is blocked until this is fixed.',
+    unverified: 'Prove the pipeline, without uploading.'
+  };
+  $('#readiness-title').textContent = titles[status] || titles.unverified;
+  const counts = readiness.summary || {};
+  $('#readiness-summary').textContent = status === 'unverified'
+    ? 'The check makes small live text and narration requests, verifies channel access, builds a local audio/video MP4, and validates queued metadata. It never creates or uploads a YouTube video.'
+    : `${counts.passed || 0} passed, ${counts.warnings || 0} warning${counts.warnings === 1 ? '' : 's'}, and ${counts.failed || 0} failed.`;
+  $('#readiness-meta').textContent = readiness.completed_at
+    ? `Last run ${formatDate(readiness.completed_at)}${readiness.stale ? ' · older than 24 hours' : ''}`
+    : 'No readiness run recorded.';
+
+  const checks = Array.isArray(readiness.checks) ? readiness.checks : [];
+  $('#readiness-checks').innerHTML = checks.length ? checks.map(check => `
+    <article class="readiness-check ${escapeHTML(check.status)}">
+      <div class="readiness-check-heading"><span class="readiness-icon" aria-hidden="true">${check.status === 'passed' ? '✓' : check.status === 'failed' ? '×' : '!'}</span><div><strong>${escapeHTML(check.label)}</strong><div class="meta-line">${escapeHTML(label(check.status))}${check.blocking ? ' · blocking' : ' · optional'} · ${(check.durationMs || 0) / 1000}s</div></div></div>
+      <p>${escapeHTML(check.message)}</p>
+      ${check.remediation ? `<small><strong>Next:</strong> ${escapeHTML(check.remediation)}</small>` : ''}
+    </article>`).join('') : empty('Run the verified check to inspect every production dependency.');
 }
 
 function renderReviews(reviews) {
@@ -345,7 +376,8 @@ function renderOperator(strategy, runs, system) {
   $('#operator-strategy-status').textContent = label(strategyStatus);
   const run = runs[0];
   const active = run && ['queued', 'running', 'cancelling'].includes(run.status);
-  $('#activate-operator-button').disabled = Boolean(system.setupRequired || active);
+  $('#activate-operator-button').disabled = Boolean(system.setupRequired || active || system.readiness?.status === 'failed');
+  $('#activate-operator-button').title = system.readiness?.status === 'failed' ? 'Resolve the production readiness failures first' : '';
   $('#activate-operator-button').textContent = strategy?.status === 'active' ? 'Run strategy now' : 'Activate & run now';
   $('#pause-operator-button').classList.toggle('hidden', strategy?.status !== 'active');
   $('#cancel-operator-run').classList.toggle('hidden', !active);
@@ -409,6 +441,7 @@ function switchView(view) {
     pipeline: ['CONTENT OPERATIONS', 'From idea to published.'],
     calendar: ['EDITORIAL PLANNING', 'Plan before you generate.'],
     analytics: ['PERFORMANCE', 'Turn results into the next move.'],
+    readiness: ['PRODUCTION READINESS', 'Verify before autonomy runs.'],
     settings: ['CHANNEL GUARDRAILS', 'Make every agent sound like you.']
   };
   $('#view-eyebrow').textContent = titles[view][0];
@@ -577,6 +610,20 @@ $('#add-idea-button').addEventListener('click', () => $('#idea-dialog').showModa
 $('#refresh-button').addEventListener('click', () => refreshDashboard());
 $('#pipeline-filter').addEventListener('change', () => renderPipeline(ui.state?.pipeline || []));
 
+$('#run-readiness-button').addEventListener('click', async event => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  button.textContent = 'Running live checks…';
+  try {
+    await mutate('/api/readiness/run', 'POST', { includePaidMedia: $('#paid-image-probe').checked }, 'Production readiness check completed.');
+    switchView('readiness');
+  } catch (_error) { /* toast already shown */ }
+  finally {
+    button.disabled = false;
+    button.textContent = 'Run verified check';
+  }
+});
+
 $('#automation-toggle').addEventListener('click', async () => {
   const action = ui.state?.system.automationPaused ? 'resume' : 'pause';
   await mutate(`/api/automation/${action}`, 'POST', {}, `Automation ${action}d.`).catch(() => {});
@@ -654,6 +701,6 @@ $('#api-key-button').addEventListener('click', () => {
 });
 
 const initialView = location.hash.slice(1);
-if (['overview', 'operator', 'pipeline', 'calendar', 'analytics', 'settings'].includes(initialView)) switchView(initialView);
+if (['overview', 'operator', 'pipeline', 'calendar', 'analytics', 'readiness', 'settings'].includes(initialView)) switchView(initialView);
 refreshDashboard();
 setInterval(() => refreshDashboard(true), 8000);

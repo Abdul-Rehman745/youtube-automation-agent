@@ -18,6 +18,7 @@ const { OperatorService } = require('./utils/operator-service');
 const { AutonomousChannelOperator } = require('./utils/autonomous-channel-operator');
 const { ActivationMetrics } = require('./utils/activation-metrics');
 const { AnonymousTelemetry } = require('./utils/anonymous-telemetry');
+const { ProductionReadinessService } = require('./utils/production-readiness-service');
 const { version } = require('./package.json');
 const chalk = require('chalk');
 
@@ -34,6 +35,7 @@ class YouTubeAutomationAgent {
     this.autonomous = null;
     this.activation = null;
     this.telemetry = null;
+    this.readiness = null;
     this.setupRequired = false;
   }
 
@@ -64,6 +66,7 @@ class YouTubeAutomationAgent {
       this.logger.info('Loading credentials...');
       this.credentials = new CredentialManager();
       const credentialsValid = await this.credentials.validateAll();
+      this.readiness = new ProductionReadinessService(this.db, this.credentials);
       
       if (!credentialsValid) {
         console.log(chalk.yellow('\n⚠️  Some credentials are missing or invalid.'));
@@ -397,7 +400,7 @@ class YouTubeAutomationAgent {
 
     this.app.get('/api/dashboard', async (_req, res) => {
       try {
-        const [stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics, learning, activation, channelStrategy, operatorRuns] = await Promise.all([
+        const [stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics, learning, activation, channelStrategy, operatorRuns, readiness] = await Promise.all([
           this.db.getStats(),
           this.db.listGenerationJobs(20),
           this.db.getPipelineOverview(50),
@@ -417,12 +420,15 @@ class YouTubeAutomationAgent {
             ? this.activation.getSummary()
             : Promise.resolve({ privacy: 'local-only', counts: {}, milestones: {} }),
           this.db.getChannelStrategy(),
-          this.db.listOperatorRuns(10)
+          this.db.listOperatorRuns(10),
+          this.readiness
+            ? this.readiness.getSummary()
+            : Promise.resolve({ status: 'unverified', stale: false, blockingFailures: [], checks: [] })
         ]);
         if (this.telemetry) void this.telemetry.sync(activation);
         res.json({
           stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics, learning, activation,
-          channelStrategy, operatorRuns,
+          channelStrategy, operatorRuns, readiness,
           system: {
             initialized: this.isInitialized,
             setupRequired: this.setupRequired,
@@ -442,6 +448,21 @@ class YouTubeAutomationAgent {
       const job = await this.db.getGenerationJob(req.params.jobId);
       if (!job) return res.status(404).json({ error: 'Job not found' });
       return res.json(job);
+    });
+
+    this.app.get('/api/readiness', async (_req, res) => {
+      if (!this.readiness) return res.status(503).json({ error: 'Readiness service is not initialized' });
+      return res.json(await this.readiness.getSummary());
+    });
+
+    this.app.post('/api/readiness/run', protect, async (req, res) => {
+      try {
+        if (!this.readiness) return res.status(503).json({ error: 'Readiness service is not initialized' });
+        const result = await this.readiness.run({ includePaidMedia: req.body?.includePaidMedia === true });
+        return res.json({ success: true, result });
+      } catch (error) {
+        return res.status(error.status || 500).json({ success: false, error: error.message });
+      }
     });
 
     this.app.post('/api/jobs/:jobId/cancel', protect, async (req, res) => {
@@ -572,6 +593,7 @@ class YouTubeAutomationAgent {
         if (this.activeJobs.size) {
           return res.status(409).json({ success: false, error: 'Wait for the current generation job to finish before starting an autonomous run' });
         }
+        await this.readiness?.assertReady('Autonomous production');
         const current = await this.db.getChannelStrategy() || {};
         const strategy = this.validateChannelStrategy({ ...(req.body || {}), status: 'active' }, current);
         const saved = await this.db.saveChannelStrategy(strategy);
@@ -670,6 +692,9 @@ class YouTubeAutomationAgent {
       const error = new Error('Finish setup with npm run walkthrough before generating content');
       error.status = 503;
       throw error;
+    }
+    if (['scheduler', 'autonomous_operator'].includes(input.source)) {
+      await this.readiness?.assertReady('Automated generation');
     }
     const maxConcurrent = Math.max(1, parseInt(process.env.MAX_CONCURRENT_JOBS || '1', 10));
     if (this.activeJobs.size >= maxConcurrent) {

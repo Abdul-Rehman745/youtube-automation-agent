@@ -3,6 +3,8 @@ const { Logger } = require('./utils/logger');
 const { CredentialManager } = require('./utils/credential-manager');
 const chalk = require('chalk');
 const path = require('path');
+const { ProductionReadinessService } = require('./utils/production-readiness-service');
+const { normalizeTags, validateYouTubeMetadata } = require('./utils/youtube-metadata-validator');
 
 class SystemTest {
   constructor() {
@@ -23,6 +25,7 @@ class SystemTest {
       { name: 'Operator Workflow API', test: () => this.testOperatorWorkflowAPI() },
       { name: 'Autonomous Channel Operator', test: () => this.testAutonomousChannelOperator() },
       { name: 'Closed-loop Channel Learning', test: () => this.testChannelLearningLoop() },
+      { name: 'Production Readiness Gate', test: () => this.testProductionReadinessGate() },
       { name: 'API Validation and Security', test: () => this.testAPIValidationAndSecurity() },
       { name: 'Publishing Safety', test: () => this.testPublishingSafety() },
       { name: 'Multi-Provider Credential Validation', test: () => this.testCredentialValidation() },
@@ -533,6 +536,92 @@ class SystemTest {
     }
 
     this.logger.info('Closed-loop channel learning test completed successfully');
+  }
+
+  async testProductionReadinessGate() {
+    const fs = require('fs').promises;
+    const os = require('os');
+    let savedRun = null;
+    const db = {
+      generateId: () => 'readiness_test',
+      saveReadinessRun: async run => {
+        savedRun = {
+          ...run,
+          started_at: run.startedAt,
+          completed_at: run.completedAt
+        };
+        return savedRun;
+      },
+      getLatestReadinessRun: async () => savedRun
+    };
+    const passingProbe = label => async () => ({ message: `${label} verified` });
+    const service = new ProductionReadinessService(db, { credentials: {} }, {
+      probes: {
+        text: passingProbe('Text'),
+        image: passingProbe('Image'),
+        narration: passingProbe('Narration'),
+        videoAssembly: passingProbe('Video'),
+        youtube: passingProbe('YouTube'),
+        metadata: passingProbe('Metadata')
+      }
+    });
+    const passed = await service.run({ includePaidMedia: true });
+    if (passed.status !== 'passed' || passed.checks.length !== 6 || !savedRun) {
+      throw new Error('A successful readiness run was not persisted correctly');
+    }
+    await service.assertReady('Test automation');
+
+    const failingService = new ProductionReadinessService(db, { credentials: {} }, {
+      probes: {
+        text: passingProbe('Text'),
+        image: passingProbe('Image'),
+        narration: passingProbe('Narration'),
+        videoAssembly: passingProbe('Video'),
+        youtube: async () => { throw new Error('token rejected sk-secret-value'); },
+        metadata: passingProbe('Metadata')
+      }
+    });
+    const failed = await failingService.run();
+    if (failed.status !== 'failed' || failed.blockingFailures[0] !== 'youtube_access') {
+      throw new Error('A blocking readiness probe did not fail closed');
+    }
+    if (failed.checks.find(check => check.id === 'youtube_access').message.includes('sk-secret-value')) {
+      throw new Error('Readiness diagnostics did not redact a provider-shaped secret');
+    }
+    let blocked = false;
+    try {
+      await failingService.assertReady('Test publishing');
+    } catch (error) {
+      blocked = error.status === 409;
+    }
+    if (!blocked) throw new Error('Failed readiness did not block protected automation');
+
+    const tags = normalizeTags(['#Automation', 'automation', 'bad"tag', 'x'.repeat(140)]);
+    const metadata = validateYouTubeMetadata({
+      title: 'A valid title',
+      description: 'A valid upload description.',
+      tags,
+      metadata: { category: 22, language: 'en' }
+    });
+    if (!metadata.valid || tags[0] !== 'Automation' || tags.includes('automation') || tags.some(tag => tag.includes('"') || tag.length > 100)) {
+      throw new Error('YouTube metadata normalization is unsafe or invalid');
+    }
+
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'yaa-readiness-db-'));
+    const persistenceDb = new Database();
+    persistenceDb.dbPath = path.join(directory, 'readiness.db');
+    try {
+      await persistenceDb.initialize();
+      await persistenceDb.saveReadinessRun(passed);
+      const persisted = await persistenceDb.getLatestReadinessRun();
+      if (persisted?.id !== passed.id || persisted.checks.length !== 6 || persisted.summary.passed !== 6) {
+        throw new Error('Readiness evidence did not round-trip through SQLite');
+      }
+    } finally {
+      await persistenceDb.close();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+    this.logger.info('Production readiness gate test completed successfully');
   }
 
   async testAPIValidationAndSecurity() {

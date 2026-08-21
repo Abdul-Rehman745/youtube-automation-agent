@@ -3,6 +3,7 @@ const fs = require('fs').promises;
 const fsSync = require('fs');
 const path = require('path');
 const { Logger } = require('../utils/logger');
+const { assertValidYouTubeMetadata } = require('../utils/youtube-metadata-validator');
 
 class PublishingSchedulingAgent {
   constructor(db, credentials) {
@@ -82,6 +83,18 @@ class PublishingSchedulingAgent {
 
   async publishContent(contentId) {
     try {
+      if (this.db.getLatestReadinessRun) {
+        const readiness = await this.db.getLatestReadinessRun();
+        if (readiness?.status === 'failed') {
+          const failures = readiness.checks
+            .filter(check => check.blocking && check.status === 'failed')
+            .map(check => check.id);
+          const error = new Error(`Publishing is blocked by the production readiness gate. Fix ${failures.join(', ')} and run the check again.`);
+          error.status = 409;
+          error.code = 'READINESS_BLOCKED';
+          throw error;
+        }
+      }
       this.logger.info(`Publishing content: ${contentId}`);
       
       const scheduleEntry = this.publishQueue.find(entry => 
@@ -116,16 +129,21 @@ class PublishingSchedulingAgent {
 
   async uploadToYouTube(scheduleEntry) {
     const { metadata } = scheduleEntry;
+    const validation = assertValidYouTubeMetadata(metadata.seo);
+    if (validation.warnings.length) {
+      this.logger.warn(`YouTube metadata warnings: ${validation.warnings.join(' ')}`);
+    }
+    const safeMetadata = validation.value;
     
     // Prepare video metadata
     const videoMetadata = {
       snippet: {
-        title: metadata.seo.title,
-        description: metadata.seo.description,
-        tags: metadata.seo.tags,
-        categoryId: metadata.seo.metadata.category.toString(),
-        defaultLanguage: metadata.seo.metadata.language,
-        defaultAudioLanguage: metadata.seo.metadata.language
+        title: safeMetadata.title,
+        description: safeMetadata.description,
+        tags: safeMetadata.tags,
+        categoryId: safeMetadata.categoryId,
+        defaultLanguage: safeMetadata.defaultLanguage,
+        defaultAudioLanguage: safeMetadata.defaultAudioLanguage
       },
       status: {
         privacyStatus: metadata.privacyStatus || process.env.DEFAULT_PRIVACY_STATUS || 'private',
@@ -236,6 +254,10 @@ class PublishingSchedulingAgent {
         await this.publishContent(entry.productionId);
         this.logger.info(`Auto-published: ${entry.title}`);
       } catch (error) {
+        if (error.code === 'READINESS_BLOCKED') {
+          this.logger.warn(error.message);
+          continue;
+        }
         this.logger.error(`Failed to auto-publish ${entry.title}:`, error);
         // Mark as failed but don't stop processing other items
         entry.status = 'failed';
