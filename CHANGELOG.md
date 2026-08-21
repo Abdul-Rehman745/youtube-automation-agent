@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## v2.8.0 — 2026-08-21
+
+- Added a persistent Research & Provenance Desk with source metadata, claim-to-source links, reviewer status, notes, and evidence summaries
+- Preserved exact YouTube trend and competitor source URLs through autonomous planning and into script generation
+- Added AI-declared factual claims that may reference only sources supplied by the research stage
+- Made unresolved claims blocking; supported claims require verified evidence and claim waivers require reviewer notes
+- Added Review Studio controls for adding and reviewing sources and claims, including official, article, video, dataset, asset-license, and other evidence types
+- Added realistic altered or synthetic media disclosure and passed the reviewed value into YouTube upload metadata
+
 ## v2.7.0 — 2026-08-21
 
 - Added persistent per-stage generation checkpoints with artifact validation, bounded retry-safe backoff, and resume-from-first-incomplete behavior

@@ -78,6 +78,7 @@ class ScriptWriterAgent {
         tone: template.tone,
         pacing: template.pacing,
         keywords: strategy.keywords,
+        claims: [],
         metadata: {
           strategy: strategy,
           generatedAt: new Date().toISOString(),
@@ -113,7 +114,10 @@ Return only valid JSON with this exact shape:
   "sections": [
     { "title": "section title", "content": ["spoken script bullet"], "duration": 60 }
   ],
-  "cta": "clear call to action"
+  "cta": "clear call to action",
+  "claims": [
+    { "text": "specific factual claim a reviewer must verify", "riskLevel": "standard|high", "sourceUrls": ["exact supplied source URL"] }
+  ]
 }
 
 Topic: ${strategy.topic}
@@ -130,7 +134,8 @@ Editorial rationale: ${strategy.planRationale || 'fit the selected topic and aud
 Channel constraints: ${strategy.channelConstraints || 'none beyond the factual-safety rules below'}
 Preferred call to action: ${strategy.callToAction || 'invite the viewer to subscribe'}
 Keywords: ${(strategy.keywords || []).join(', ')}
-Avoid fabricated statistics, unsupported claims, and fake urgency.`;
+Research sources: ${JSON.stringify(strategy.researchSources || [])}
+Avoid fabricated statistics, unsupported claims, and fake urgency. List every externally verifiable factual claim in claims. Use only exact URLs from Research sources; use an empty sourceUrls array when the supplied sources do not support a claim.`;
 
     try {
       const response = await this.aiTextService.generateText(prompt, {
@@ -159,6 +164,7 @@ Avoid fabricated statistics, unsupported claims, and fake urgency.`;
         tone: template.tone,
         pacing: template.pacing,
         keywords: strategy.keywords || [],
+        claims: this.normalizeAIClaims(parsed.claims, strategy.researchSources || []),
         metadata: {
           strategy,
           generatedAt: new Date().toISOString(),
@@ -223,6 +229,18 @@ Avoid fabricated statistics, unsupported claims, and fake urgency.`;
         };
       })
       .filter(section => section.title && section.content.length > 0);
+  }
+
+  normalizeAIClaims(claims, sources) {
+    if (!Array.isArray(claims)) return [];
+    const allowedUrls = new Set((sources || []).map(source => source.url));
+    return claims.slice(0, 25).map(item => ({
+      text: String(item?.text || item?.claim || '').trim().slice(0, 1000),
+      riskLevel: item?.riskLevel === 'high' ? 'high' : 'standard',
+      sourceUrls: [...new Set((Array.isArray(item?.sourceUrls) ? item.sourceUrls : [])
+        .map(url => String(url))
+        .filter(url => allowedUrls.has(url)))]
+    })).filter(item => item.text);
   }
 
   normalizeAICTA(cta, strategy) {

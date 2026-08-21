@@ -462,6 +462,67 @@ function switchView(view) {
   location.hash = view;
 }
 
+function selectOptions(options, selected) {
+  return options.map(([value, label]) =>
+    `<option value="${escapeHTML(value)}" ${value === selected ? 'selected' : ''}>${escapeHTML(label)}</option>`
+  ).join('');
+}
+
+function renderSourceEditor(source = {}, disabled = false) {
+  return `<article class="provenance-item" data-provenance-source data-id="${escapeHTML(source.id || '')}" data-published-at="${escapeHTML(source.publishedAt || '')}" data-accessed-at="${escapeHTML(source.accessedAt || '')}">
+    <div class="provenance-item-heading"><strong>Research source</strong><button type="button" class="text-button danger-text" data-remove-provenance ${disabled ? 'disabled' : ''}>Remove</button></div>
+    <label><span>URL</span><input data-field="url" type="url" value="${escapeHTML(source.url || '')}" placeholder="https://..." required ${disabled ? 'disabled' : ''}></label>
+    <div class="form-grid two">
+      <label><span>Title</span><input data-field="title" value="${escapeHTML(source.title || '')}" maxlength="300" ${disabled ? 'disabled' : ''}></label>
+      <label><span>Publisher</span><input data-field="publisher" value="${escapeHTML(source.publisher || '')}" maxlength="200" ${disabled ? 'disabled' : ''}></label>
+      <label><span>Type</span><select data-field="sourceType" ${disabled ? 'disabled' : ''}>${selectOptions([
+        ['official', 'Official source'], ['article', 'Article'], ['video', 'Video'], ['dataset', 'Dataset'], ['asset', 'Asset or license'], ['other', 'Other']
+      ], source.sourceType || 'other')}</select></label>
+      <label><span>Review status</span><select data-field="status" ${disabled ? 'disabled' : ''}>${selectOptions([
+        ['pending', 'Pending review'], ['verified', 'Verified'], ['rejected', 'Rejected']
+      ], source.status || 'pending')}</select></label>
+    </div>
+    <label><span>Evidence notes</span><textarea data-field="notes" rows="2" maxlength="1000" ${disabled ? 'disabled' : ''}>${escapeHTML(source.notes || '')}</textarea></label>
+    ${source.url ? `<a class="source-link" href="${escapeHTML(source.url)}" target="_blank" rel="noopener">Open source ↗</a>` : ''}
+  </article>`;
+}
+
+function renderClaimEditor(claim = {}, sources = [], disabled = false) {
+  const linked = new Set(claim.sourceIds || []);
+  return `<article class="provenance-item ${claim.riskLevel === 'high' ? 'high-risk' : ''}" data-provenance-claim data-id="${escapeHTML(claim.id || '')}">
+    <div class="provenance-item-heading"><strong>Factual claim</strong><button type="button" class="text-button danger-text" data-remove-provenance ${disabled ? 'disabled' : ''}>Remove</button></div>
+    <label><span>Claim</span><textarea data-field="text" rows="3" maxlength="1000" required ${disabled ? 'disabled' : ''}>${escapeHTML(claim.text || '')}</textarea></label>
+    <div class="form-grid two">
+      <label><span>Risk</span><select data-field="riskLevel" ${disabled ? 'disabled' : ''}>${selectOptions([
+        ['standard', 'Standard'], ['high', 'High risk']
+      ], claim.riskLevel || 'standard')}</select></label>
+      <label><span>Resolution</span><select data-field="status" ${disabled ? 'disabled' : ''}>${selectOptions([
+        ['pending', 'Pending'], ['supported', 'Supported'], ['unsupported', 'Unsupported'], ['waived', 'Waived with note']
+      ], claim.status || 'pending')}</select></label>
+    </div>
+    <fieldset class="source-checklist" ${disabled ? 'disabled' : ''}><legend>Supporting sources</legend>
+      ${sources.length ? sources.map(source => `<label><input type="checkbox" data-claim-source="${escapeHTML(source.id)}" ${linked.has(source.id) ? 'checked' : ''}> ${escapeHTML(source.title || source.url)}</label>`).join('') : '<small>Add a source before marking this claim supported.</small>'}
+    </fieldset>
+    <label><span>Reviewer notes</span><textarea data-field="notes" rows="2" maxlength="1000" placeholder="Required when waived" ${disabled ? 'disabled' : ''}>${escapeHTML(claim.notes || '')}</textarea></label>
+  </article>`;
+}
+
+function renderProvenanceEditor(provenance = {}, canReview = true) {
+  const sources = provenance.sources || [];
+  const claims = provenance.claims || [];
+  const summary = provenance.summary || {};
+  const statusLabel = provenance.status === 'verified' ? 'Evidence verified' : provenance.status === 'not_required' ? 'No claims declared' : `${summary.unresolvedClaims || 0} unresolved`;
+  return `<section class="provenance-panel">
+    <div class="panel-heading"><div><p class="eyebrow">RESEARCH &amp; PROVENANCE</p><h3>Evidence desk</h3><p>Verify sources, connect every factual claim, and record disclosure before approval.</p></div><span class="status ${provenance.status === 'verified' || provenance.status === 'not_required' ? 'success' : 'warning'}">${escapeHTML(statusLabel)}</span></div>
+    <div class="provenance-toolbar"><strong>Sources</strong>${canReview ? '<button type="button" class="text-button" data-add-provenance-source>Add source +</button>' : ''}</div>
+    <div id="provenance-sources" class="provenance-list">${sources.map(source => renderSourceEditor(source, !canReview)).join('') || '<p class="empty-inline">No research sources attached.</p>'}</div>
+    <div class="provenance-toolbar"><strong>Claims</strong>${canReview ? '<button type="button" class="text-button" data-add-provenance-claim>Add claim +</button>' : ''}</div>
+    <div id="provenance-claims" class="provenance-list">${claims.map(claim => renderClaimEditor(claim, sources, !canReview)).join('') || '<p class="empty-inline">No externally verifiable claims declared.</p>'}</div>
+    <label class="toggle disclosure-toggle"><input id="contains-synthetic-media" type="checkbox" ${provenance.containsSyntheticMedia ? 'checked' : ''} ${canReview ? '' : 'disabled'}><span></span> Contains realistic altered or synthetic media requiring YouTube disclosure</label>
+    ${canReview ? '<button type="button" class="button secondary" data-save-provenance>Save evidence review</button>' : ''}
+  </section>`;
+}
+
 async function openContent(productionId) {
   $('#loading').classList.add('active');
   try {
@@ -492,6 +553,7 @@ async function openContent(productionId) {
             <label><span>Title variant</span><select name="selectedTitleVariant">${experiment.titleVariants.map((variant, index) => `<option value="${index}" data-title="${escapeHTML(variant.title)}" ${index === selectedTitleVariant ? 'selected' : ''}>${escapeHTML(variant.label)} — ${escapeHTML(variant.title)}</option>`).join('')}</select></label>
             <div class="experiment-thumbnails">${experiment.thumbnailVariants.map((variant, index) => `<label class="experiment-thumb ${index === selectedThumbnailVariant ? 'selected' : ''}"><input type="radio" name="selectedThumbnailVariant" value="${index}" ${index === selectedThumbnailVariant ? 'checked' : ''}><img src="${escapeHTML(item.assetUrls.experimentThumbnails?.[index] || '')}" alt="${escapeHTML(variant.label)} thumbnail variant"><span>${escapeHTML(variant.label)}</span></label>`).join('')}</div>
           </section>` : ''}
+          ${renderProvenanceEditor(item.provenance, canReview)}
           <div class="form-grid two">
             <label><span>Publish time</span><input name="publishTime" type="datetime-local" value="${toLocalInput(publishTime)}"></label>
             <label><span>Privacy</span><select name="privacyStatus"><option value="private" ${data.privacyStatus === 'private' ? 'selected' : ''}>Private</option><option value="unlisted" ${data.privacyStatus === 'unlisted' ? 'selected' : ''}>Unlisted</option><option value="public" ${data.privacyStatus === 'public' ? 'selected' : ''}>Public</option></select></label>
@@ -503,6 +565,7 @@ async function openContent(productionId) {
           ${canReview ? `<div class="form-actions"><button type="button" class="button primary" data-approve-content="${escapeHTML(item.id)}">Approve & schedule</button><button type="button" class="button secondary" data-save-content="${escapeHTML(item.id)}">Save draft</button><button type="button" class="button danger" data-reject-content="${escapeHTML(item.id)}">Reject</button><button type="button" class="button ghost" data-retry-content="${escapeHTML(item.id)}">Regenerate</button></div>` : `<a class="button secondary" href="${escapeHTML(item.schedule?.youtube_url || '#')}" target="_blank" rel="noopener">Open on YouTube</a>`}
         </form>
       </div>`;
+    $('#content-review-form').dataset.productionId = item.id;
     $('#content-dialog').showModal();
   } catch (error) {
     showToast(error.message, 'error');
@@ -533,6 +596,66 @@ function contentFormData() {
     factChecked: form.elements.factChecked?.checked || false,
     rightsConfirmed: form.elements.rightsConfirmed?.checked || false
   };
+}
+
+function provenanceFormData() {
+  const sources = $$('[data-provenance-source]').map(item => ({
+    id: item.dataset.id,
+    url: item.querySelector('[data-field="url"]').value,
+    title: item.querySelector('[data-field="title"]').value,
+    publisher: item.querySelector('[data-field="publisher"]').value,
+    sourceType: item.querySelector('[data-field="sourceType"]').value,
+    status: item.querySelector('[data-field="status"]').value,
+    notes: item.querySelector('[data-field="notes"]').value,
+    publishedAt: item.dataset.publishedAt || null,
+    accessedAt: item.dataset.accessedAt || null
+  }));
+  const claims = $$('[data-provenance-claim]').map(item => ({
+    id: item.dataset.id,
+    text: item.querySelector('[data-field="text"]').value,
+    riskLevel: item.querySelector('[data-field="riskLevel"]').value,
+    status: item.querySelector('[data-field="status"]').value,
+    notes: item.querySelector('[data-field="notes"]').value,
+    sourceIds: [...item.querySelectorAll('[data-claim-source]:checked')].map(input => input.dataset.claimSource)
+  }));
+  return {
+    sources,
+    claims,
+    containsSyntheticMedia: $('#contains-synthetic-media')?.checked || false
+  };
+}
+
+function clientId(prefix) {
+  const uuid = globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  return `${prefix}_${uuid}`;
+}
+
+function currentSourceOptions() {
+  return $$('[data-provenance-source]').map(item => ({
+    id: item.dataset.id,
+    title: item.querySelector('[data-field="title"]').value || item.querySelector('[data-field="url"]').value || 'New source'
+  }));
+}
+
+async function persistProvenance(productionId, successMessage = null) {
+  $('#loading').classList.add('active');
+  try {
+    const result = await api(`/api/content/${encodeURIComponent(productionId)}/provenance`, {
+      method: 'PUT',
+      body: JSON.stringify(provenanceFormData())
+    });
+    if (successMessage) {
+      showToast(successMessage);
+      $('#content-dialog').close();
+      await openContent(productionId);
+    }
+    return result;
+  } catch (error) {
+    showToast(error.message, 'error');
+    throw error;
+  } finally {
+    $('#loading').classList.remove('active');
+  }
 }
 
 async function mutate(url, method, body, successMessage) {
@@ -591,14 +714,47 @@ document.addEventListener('click', async event => {
     await mutate(`/api/learning/recommendations/${encodeURIComponent(id)}/${action}`, 'POST', {}, message).catch(() => {});
   }
 
+  const addSource = event.target.closest('[data-add-provenance-source]');
+  if (addSource) {
+    const list = $('#provenance-sources');
+    list.querySelector('.empty-inline')?.remove();
+    list.insertAdjacentHTML('beforeend', renderSourceEditor({ id: clientId('source') }));
+    return;
+  }
+
+  const addClaim = event.target.closest('[data-add-provenance-claim]');
+  if (addClaim) {
+    const list = $('#provenance-claims');
+    list.querySelector('.empty-inline')?.remove();
+    list.insertAdjacentHTML('beforeend', renderClaimEditor({ id: clientId('claim') }, currentSourceOptions()));
+    return;
+  }
+
+  const removeProvenance = event.target.closest('[data-remove-provenance]');
+  if (removeProvenance) {
+    removeProvenance.closest('.provenance-item')?.remove();
+    return;
+  }
+
+  const saveProvenance = event.target.closest('[data-save-provenance]');
+  if (saveProvenance) {
+    const productionId = $('#content-review-form')?.dataset.productionId;
+    if (productionId) await persistProvenance(productionId, 'Evidence review saved.').catch(() => {});
+    return;
+  }
+
   const save = event.target.closest('[data-save-content]');
   if (save) {
-    await mutate(`/api/content/${encodeURIComponent(save.dataset.saveContent)}`, 'PATCH', contentFormData(), 'Draft saved.').catch(() => {});
+    try {
+      await persistProvenance(save.dataset.saveContent);
+      await mutate(`/api/content/${encodeURIComponent(save.dataset.saveContent)}`, 'PATCH', contentFormData(), 'Draft and evidence review saved.');
+    } catch (_error) { /* toast already shown */ }
   }
 
   const approve = event.target.closest('[data-approve-content]');
   if (approve) {
     try {
+      await persistProvenance(approve.dataset.approveContent);
       await mutate(`/api/content/${encodeURIComponent(approve.dataset.approveContent)}/approve`, 'POST', contentFormData(), 'Content approved and scheduled.');
       $('#content-dialog').close();
     } catch (_error) { /* toast already shown */ }

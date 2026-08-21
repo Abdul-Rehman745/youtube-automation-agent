@@ -26,6 +26,7 @@ class SystemTest {
       { name: 'Autonomous Channel Operator', test: () => this.testAutonomousChannelOperator() },
       { name: 'Closed-loop Channel Learning', test: () => this.testChannelLearningLoop() },
       { name: 'Production Readiness Gate', test: () => this.testProductionReadinessGate() },
+      { name: 'Research and Provenance Desk', test: () => this.testProvenanceDesk() },
       { name: 'Resumable Generation Checkpoints', test: () => this.testResumableGenerationCheckpoints() },
       { name: 'API Validation and Security', test: () => this.testAPIValidationAndSecurity() },
       { name: 'Publishing Safety', test: () => this.testPublishingSafety() },
@@ -365,11 +366,20 @@ class SystemTest {
 
       const strategyAgent = new ContentStrategyAgent(db, {});
       strategyAgent.analyzeTrends = async function() {
-        this.trendingTopics = [{ topic: 'practical AI workflows', score: 8, sources: ['trending'] }];
+        this.trendingTopics = [{
+          topic: 'practical AI workflows', score: 8, sources: ['trending'],
+          evidence: [{
+            url: 'https://www.youtube.com/watch?v=research123',
+            title: 'Practical AI workflows', publisher: 'Evidence channel', sourceType: 'video'
+          }]
+        }];
         this.competitorData = [];
       };
       const planned = await strategyAgent.researchAndPlanChannel(strategy);
-      if (planned.plan.length !== 2 || !planned.research.sources.includes('YouTube most-popular videos')) {
+      if (
+        planned.plan.length !== 2 || !planned.research.sources.includes('YouTube most-popular videos') ||
+        planned.research.sourceCatalog.length !== 1 || planned.plan[0].sourceUrls.length !== 1
+      ) {
         throw new Error('Strategy did not produce an evidence-labeled autonomous plan');
       }
 
@@ -399,7 +409,8 @@ class SystemTest {
       if (
         completed.status !== 'waiting_review' ||
         completed.generatedJobs.length !== 2 ||
-        receivedInputs.some(input => input.source !== 'autonomous_operator' || !input.strategyContext?.angle)
+        receivedInputs.some(input => input.source !== 'autonomous_operator' || !input.strategyContext?.angle) ||
+        receivedInputs[0].strategyContext.researchSources.length !== 1
       ) {
         throw new Error('Autonomous operator did not execute the planned workflow');
       }
@@ -651,6 +662,138 @@ class SystemTest {
       await fs.rm(directory, { recursive: true, force: true });
     }
     this.logger.info('Production readiness gate test completed successfully');
+  }
+
+  async testProvenanceDesk() {
+    const fs = require('fs').promises;
+    const os = require('os');
+    const { ProvenanceService } = require('./utils/provenance-service');
+    const { OperatorService } = require('./utils/operator-service');
+    const { PublishingSchedulingAgent } = require('./agents/publishing-scheduling-agent');
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'yaa-provenance-'));
+    const db = new Database();
+    db.dbPath = path.join(directory, 'provenance.db');
+    await db.initialize();
+    const productionId = 'prod-provenance-test';
+    const videoPath = path.join(directory, 'video.mp4');
+    await fs.writeFile(videoPath, Buffer.from('test-video'));
+
+    try {
+      await db.saveProductionData({
+        id: productionId,
+        status: 'needs_review',
+        assets: { finalVideo: { path: videoPath, simulated: false } },
+        timeline: {}, scheduledPublishTime: new Date(Date.now() + 86400000).toISOString(),
+        priority: 50, estimatedDuration: '1:00'
+      });
+      const production = {
+        id: productionId,
+        strategy: {
+          topic: 'Evidence-aware automation',
+          researchSources: [{
+            url: 'https://example.com/research/fact',
+            title: 'Official research evidence',
+            publisher: 'Example Institute',
+            sourceType: 'official'
+          }]
+        },
+        script: {
+          title: 'Evidence-aware automation',
+          fullScript: 'A sufficiently detailed script with a factual statement that must be reviewed before this production can be approved.'.repeat(3),
+          claims: [{
+            text: 'The documented workflow reduces repeated manual steps.',
+            riskLevel: 'standard',
+            sourceUrls: ['https://example.com/research/fact']
+          }]
+        },
+        seo: {
+          title: 'Evidence-aware automation',
+          description: 'A detailed description of an evidence-aware automation workflow for careful channel operators.',
+          tags: ['automation', 'evidence', 'workflow']
+        },
+        assets: { finalVideo: { path: videoPath, simulated: false } }
+      };
+      await db.saveProductionSnapshot(production);
+
+      const provenanceService = new ProvenanceService(db);
+      const initialized = await provenanceService.initialize(productionId, production);
+      if (
+        initialized.status !== 'blocked' || initialized.sources.length !== 1 ||
+        initialized.claims.length !== 1 || initialized.claims[0].sourceIds.length !== 1
+      ) {
+        throw new Error('Generated research sources and claims were not initialized as unresolved provenance');
+      }
+
+      const publishGuard = new PublishingSchedulingAgent(db, {});
+      publishGuard.publishQueue = [{ productionId, status: 'scheduled', metadata: {} }];
+      let blockedPublishRejected = false;
+      try {
+        await publishGuard.publishContent(productionId);
+      } catch (error) {
+        blockedPublishRejected = error.code === 'PROVENANCE_BLOCKED';
+      }
+      if (!blockedPublishRejected) throw new Error('Publishing did not independently enforce the provenance gate');
+
+      let unverifiedSupportRejected = false;
+      try {
+        await provenanceService.review(productionId, {
+          sources: initialized.sources,
+          claims: [{ ...initialized.claims[0], status: 'supported' }]
+        });
+      } catch (error) {
+        unverifiedSupportRejected = /verified source/.test(error.message);
+      }
+      if (!unverifiedSupportRejected) throw new Error('A claim was supported without reviewer-verified evidence');
+
+      const reviewed = await provenanceService.review(productionId, {
+        sources: initialized.sources.map(source => ({ ...source, status: 'verified' })),
+        claims: [{ ...initialized.claims[0], status: 'supported' }],
+        containsSyntheticMedia: true
+      });
+      if (reviewed.status !== 'verified' || !reviewed.containsSyntheticMedia || reviewed.summary.unresolvedClaims !== 0) {
+        throw new Error('A complete evidence review was not persisted as verified');
+      }
+
+      const bundle = await db.getProductionBundle(productionId);
+      const quality = await new OperatorService(db).runQualityChecks({ ...production, provenance: bundle.provenance }, {});
+      if (!quality.passed || !quality.checks.find(check => check.id === 'provenance' && check.passed)) {
+        throw new Error('Verified provenance did not satisfy the production quality gate');
+      }
+
+      let uploadRequest;
+      const publishing = new PublishingSchedulingAgent(db, {});
+      publishing.youtube = {
+        videos: { insert: async request => { uploadRequest = request; return { data: { id: 'provenance-video' } }; } }
+      };
+      await publishing.uploadToYouTube({
+        publishTime: new Date(Date.now() + 86400000).toISOString(),
+        metadata: {
+          seo: production.seo,
+          video: { path: videoPath },
+          privacyStatus: 'private',
+          containsSyntheticMedia: true
+        }
+      });
+      if (uploadRequest?.requestBody?.status?.containsSyntheticMedia !== true) {
+        throw new Error('Synthetic-media disclosure was not handed to the YouTube upload request');
+      }
+
+      let emptyWaiverRejected = false;
+      try {
+        new ProvenanceService(db).build({
+          sources: reviewed.sources,
+          claims: [{ ...reviewed.claims[0], status: 'waived', notes: '' }]
+        });
+      } catch (error) {
+        emptyWaiverRejected = /reviewer note/.test(error.message);
+      }
+      if (!emptyWaiverRejected) throw new Error('A claim waiver without a reviewer note was accepted');
+    } finally {
+      await db.close();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+
+    this.logger.info('Research and provenance desk test completed successfully');
   }
 
   async testResumableGenerationCheckpoints() {

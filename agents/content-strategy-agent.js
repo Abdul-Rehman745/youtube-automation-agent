@@ -60,11 +60,14 @@ class ContentStrategyAgent {
       });
 
       return response.data.items.map(video => ({
+        videoId: video.id,
         title: video.snippet.title,
         tags: video.snippet.tags || [],
         viewCount: parseInt(video.statistics?.viewCount, 10) || 0,
         category: video.snippet.categoryId,
-        publishedAt: video.snippet.publishedAt
+        publishedAt: video.snippet.publishedAt,
+        publisher: video.snippet.channelTitle || 'YouTube',
+        url: `https://www.youtube.com/watch?v=${video.id}`
       }));
     } catch (error) {
       this.logger.error('Failed to fetch YouTube trends:', error);
@@ -138,16 +141,23 @@ class ContentStrategyAgent {
       // Extract topics from title
       const keywords = this.extractKeywords(title);
       keywords.forEach(keyword => {
-        if (!topics[keyword]) topics[keyword] = { count: 0, views: 0 };
+        if (!topics[keyword]) topics[keyword] = { count: 0, views: 0, evidence: [] };
         topics[keyword].count++;
         topics[keyword].views += views;
+        topics[keyword].evidence.push({
+          url: `https://www.youtube.com/watch?v=${video.id}`,
+          title: video.snippet.title,
+          publisher: video.snippet.channelTitle || 'Configured competitor channel',
+          publishedAt: video.snippet.publishedAt,
+          sourceType: 'video'
+        });
       });
     });
 
     const topTopics = Object.entries(topics)
       .sort((a, b) => b[1].views - a[1].views)
       .slice(0, 10)
-      .map(([topic, data]) => ({ topic, avgViews: data.views / data.count }));
+      .map(([topic, data]) => ({ topic, avgViews: data.views / data.count, evidence: data.evidence.slice(0, 5) }));
 
     return {
       topTopics,
@@ -175,24 +185,32 @@ class ContentStrategyAgent {
       const keywords = this.extractKeywords(trend.title);
       keywords.forEach(keyword => {
         if (!mergedTopics.has(keyword)) {
-          mergedTopics.set(keyword, { score: 0, sources: [] });
+          mergedTopics.set(keyword, { score: 0, sources: [], evidence: [] });
         }
         const topic = mergedTopics.get(keyword);
         topic.score += trend.viewCount / 1000000; // Normalize by millions
         topic.sources.push('trending');
+        topic.evidence.push({
+          url: trend.url,
+          title: trend.title,
+          publisher: trend.publisher,
+          publishedAt: trend.publishedAt,
+          sourceType: 'video'
+        });
       });
     });
 
     // Add competitor topics
     competitors.forEach(competitor => {
       if (competitor.topPerformingTopics) {
-        competitor.topPerformingTopics.forEach(({ topic, avgViews }) => {
+        competitor.topPerformingTopics.forEach(({ topic, avgViews, evidence = [] }) => {
           if (!mergedTopics.has(topic)) {
-            mergedTopics.set(topic, { score: 0, sources: [] });
+            mergedTopics.set(topic, { score: 0, sources: [], evidence: [] });
           }
           const topicData = mergedTopics.get(topic);
           topicData.score += avgViews / 100000; // Normalize
           topicData.sources.push('competitor');
+          topicData.evidence.push(...evidence);
         });
       }
     });
@@ -200,6 +218,10 @@ class ContentStrategyAgent {
     // Convert to array and sort by score
     return Array.from(mergedTopics.entries())
       .map(([topic, data]) => ({ topic, ...data }))
+      .map(item => ({
+        ...item,
+        evidence: [...new Map(item.evidence.filter(source => source.url).map(source => [source.url, source])).values()].slice(0, 5)
+      }))
       .sort((a, b) => b.score - a.score)
       .slice(0, 50);
   }
@@ -269,8 +291,12 @@ class ContentStrategyAgent {
     const signals = this.trendingTopics.slice(0, 15).map(item => ({
       topic: item.topic,
       score: Number(item.score || 0),
-      sources: [...new Set(item.sources || [])]
+      sources: [...new Set(item.sources || [])],
+      evidence: item.evidence || []
     }));
+    const sourceCatalog = [...new Map(
+      signals.flatMap(signal => signal.evidence || []).map(source => [source.url, source])
+    ).values()].slice(0, 30);
     const signalSources = new Set(signals.flatMap(signal => signal.sources));
     const researchSources = [
       ...(signalSources.has('trending') ? ['YouTube most-popular videos'] : []),
@@ -282,6 +308,7 @@ class ContentStrategyAgent {
       generatedAt: new Date().toISOString(),
       sources: researchSources.length ? researchSources : ['No usable live signals returned; evergreen strategy fallback'],
       signals,
+      sourceCatalog,
       recentTopics: recentRows.map(row => row.topic),
       competitorChannelsAnalyzed: this.competitorData.length,
       approvedLearnings: approvedLearnings.map(item => ({
@@ -293,10 +320,10 @@ class ContentStrategyAgent {
     };
 
     let plan = await this.generateAutonomousPlanWithAI(channelStrategy, research, targetCount);
-    plan = this.normalizeAutonomousPlan(plan, channelStrategy, targetCount);
+    plan = this.normalizeAutonomousPlan(plan, channelStrategy, targetCount, research);
     if (plan.length < targetCount) {
       const fallback = this.buildFallbackAutonomousPlan(channelStrategy, research, targetCount);
-      plan = this.normalizeAutonomousPlan([...plan, ...fallback], channelStrategy, targetCount);
+      plan = this.normalizeAutonomousPlan([...plan, ...fallback], channelStrategy, targetCount, research);
     }
 
     return { research, plan };
@@ -307,7 +334,7 @@ class ContentStrategyAgent {
     const prompt = `You are the strategy lead for an autonomous YouTube channel.
 Turn the channel strategy and the supplied research signals into a focused content plan.
 Return only a valid JSON array with exactly ${targetCount} items using this shape:
-[{"topic":"specific video topic","angle":"distinct audience-relevant angle","rationale":"why this advances the channel objective using the supplied evidence","format":"explainer|tutorial|list|review|story","length":"short|medium|long"}]
+[{"topic":"specific video topic","angle":"distinct audience-relevant angle","rationale":"why this advances the channel objective using the supplied evidence","format":"explainer|tutorial|list|review|story","length":"short|medium|long","sourceUrls":["exact URL from the supplied source catalog"]}]
 
 Channel objective: ${channelStrategy.objective}
 Audience: ${channelStrategy.audience}
@@ -318,10 +345,11 @@ Preferred length: ${channelStrategy.default_length}
 Success metric: ${channelStrategy.success_metric || 'not specified'}
 Constraints: ${channelStrategy.constraints || 'none'}
 Research signals: ${JSON.stringify(research.signals)}
+Allowed source catalog: ${JSON.stringify(research.sourceCatalog)}
 Recent topics to avoid repeating: ${JSON.stringify(research.recentTopics)}
 Operator-approved performance learnings to apply: ${JSON.stringify(research.approvedLearnings)}
 
-Do not invent trend data, statistics, sources, or factual claims. Apply only the supplied approved learnings; pending or rejected recommendations are not authorized. Prefer evergreen topics when the supplied signals are weak.`;
+Do not invent trend data, statistics, sources, URLs, or factual claims. Use only exact URLs from the supplied source catalog. Apply only the supplied approved learnings; pending or rejected recommendations are not authorized. Prefer evergreen topics when the supplied signals are weak.`;
 
     try {
       const response = await this.aiTextService.generateText(prompt, { maxTokens: 1800, temperature: 0.65 });
@@ -351,13 +379,15 @@ Do not invent trend data, statistics, sources, or factual claims. Apply only the
           ? `Builds an evergreen topic from the channel strategy while applying approved learning: ${research.approvedLearnings[0].title}.`
           : 'Builds an evergreen topic from the channel strategy when live research signals are limited.',
       format: index === 0 ? channelStrategy.default_format : ['explainer', 'tutorial', 'list'][index % 3],
-      length: channelStrategy.default_length
+      length: channelStrategy.default_length,
+      sourceUrls: research.signals.find(signal => signal.topic === topic)?.evidence?.map(source => source.url) || []
     }));
   }
 
-  normalizeAutonomousPlan(plan, channelStrategy, targetCount) {
+  normalizeAutonomousPlan(plan, channelStrategy, targetCount, research = {}) {
     const formats = new Set(['explainer', 'tutorial', 'list', 'review', 'story']);
     const lengths = new Set(['short', 'medium', 'long']);
+    const allowedSourceUrls = new Set((research.sourceCatalog || []).map(source => source.url));
     const seen = new Set();
     return plan
       .map(item => ({
@@ -369,7 +399,10 @@ Do not invent trend data, statistics, sources, or factual claims. Apply only the
           : channelStrategy.default_format,
         length: lengths.has(String(item.length || '').toLowerCase())
           ? String(item.length).toLowerCase()
-          : channelStrategy.default_length
+          : channelStrategy.default_length,
+        sourceUrls: [...new Set((Array.isArray(item.sourceUrls) ? item.sourceUrls : [])
+          .map(url => String(url))
+          .filter(url => allowedSourceUrls.has(url)))]
       }))
       .filter(item => {
         const key = item.topic.toLowerCase();

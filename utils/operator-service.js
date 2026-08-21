@@ -61,6 +61,16 @@ class OperatorService {
         ? `Content matches blocked terms: ${matchedBannedTopics.join(', ')}`
         : 'No blocked brand topics detected'));
 
+    const provenance = production.provenance || {};
+    const provenancePassed = ['verified', 'not_required'].includes(provenance.status || 'not_required');
+    const unresolved = Number(provenance.summary?.unresolvedClaims || 0);
+    checks.push(this.check('provenance', provenancePassed,
+      provenance.status === 'verified'
+        ? `${provenance.summary?.resolvedClaims || 0} factual claims resolved against reviewed evidence`
+        : provenance.status === 'not_required'
+          ? 'No externally verifiable factual claims were declared'
+          : `${unresolved} factual claim${unresolved === 1 ? '' : 's'} still require evidence review`));
+
     const blockingFailures = checks.filter(check => check.blocking && !check.passed);
     return {
       passed: blockingFailures.length === 0,

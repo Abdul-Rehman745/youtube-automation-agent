@@ -20,6 +20,7 @@ const { ActivationMetrics } = require('./utils/activation-metrics');
 const { AnonymousTelemetry } = require('./utils/anonymous-telemetry');
 const { ProductionReadinessService } = require('./utils/production-readiness-service');
 const { GenerationRecoveryService, GENERATION_STAGES } = require('./utils/generation-recovery-service');
+const { ProvenanceService } = require('./utils/provenance-service');
 const { version } = require('./package.json');
 const chalk = require('chalk');
 
@@ -38,6 +39,7 @@ class YouTubeAutomationAgent {
     this.telemetry = null;
     this.readiness = null;
     this.recovery = null;
+    this.provenance = null;
     this.setupRequired = false;
   }
 
@@ -56,6 +58,7 @@ class YouTubeAutomationAgent {
         updateJobStage: (...args) => this.updateJobStage(...args)
       });
       this.operator = new OperatorService(this.db);
+      this.provenance = new ProvenanceService(this.db);
       this.autonomous = new AutonomousChannelOperator(this.db, {
         researchAndPlan: strategy => {
           if (!this.agents.strategy) throw new Error('The strategy agent is not configured');
@@ -637,6 +640,35 @@ class YouTubeAutomationAgent {
       return res.json({ success: true, result: run });
     });
 
+    this.app.put('/api/content/:productionId/provenance', protect, async (req, res) => {
+      try {
+        const bundle = await this.db.getProductionBundle(req.params.productionId);
+        if (!bundle) return res.status(404).json({ error: 'Content not found' });
+        if (bundle.review_status === 'approved' || bundle.schedule) {
+          return res.status(409).json({ error: 'Provenance is locked after content is approved or scheduled' });
+        }
+        if (!this.provenance) this.provenance = new ProvenanceService(this.db);
+        await this.provenance.review(bundle.id, req.body || {});
+        const updated = await this.db.getProductionBundle(bundle.id);
+        const profile = await this.db.getChannelProfile() || {};
+        const quality = await this.operator.runQualityChecks({
+          ...updated,
+          scheduledPublishTime: updated.scheduled_publish_time
+        }, profile);
+        const reviewStatus = quality.passed ? 'needs_review' : 'needs_attention';
+        const result = await this.db.saveContentReview(bundle.id, {
+          status: reviewStatus,
+          editorData: updated.editorData,
+          qualityChecks: quality.checks,
+          reviewNotes: quality.passed ? null : `Blocking checks failed: ${quality.blockingFailures.join(', ')}`,
+          reviewedAt: null
+        });
+        return res.json({ success: true, result: this.decorateContentBundle(result) });
+      } catch (error) {
+        return res.status(error.status || 400).json({ success: false, error: error.message });
+      }
+    });
+
     this.app.post('/api/operator/runs/:runId/resume', protect, async (req, res) => {
       try {
         if (this.setupRequired || !this.agents.strategy) {
@@ -920,6 +952,9 @@ class YouTubeAutomationAgent {
       generated.channelValueProposition = strategyContext.valueProposition || null;
       generated.channelConstraints = strategyContext.constraints || null;
       generated.callToAction = profile.call_to_action || null;
+      generated.researchSources = Array.isArray(strategyContext.researchSources)
+        ? strategyContext.researchSources
+        : [];
       return generated;
     });
     this.logger.info(`Strategy generated: ${strategy.topic}`);
@@ -963,6 +998,8 @@ class YouTubeAutomationAgent {
     // Re-persist reused production artifacts in case a restart happened between checkpointing and persistence.
     const contentId = await this.db.saveProductionData(productionData);
     await this.db.saveProductionSnapshot(productionData);
+    if (!this.provenance) this.provenance = new ProvenanceService(this.db);
+    productionData.provenance = await this.provenance.initialize(contentId, productionData);
     this.logger.info(`Content saved with ID: ${contentId}`);
 
     // Step 6: Quality and approval gate
@@ -1182,7 +1219,9 @@ class YouTubeAutomationAgent {
       scheduledPublishTime: editorData.publishTime || input.publishTime || bundle.scheduled_publish_time,
       priority: bundle.priority,
       estimatedDuration: bundle.estimated_duration,
-      privacyStatus: editorData.privacyStatus || process.env.DEFAULT_PRIVACY_STATUS || 'private'
+      privacyStatus: editorData.privacyStatus || process.env.DEFAULT_PRIVACY_STATUS || 'private',
+      provenance: bundle.provenance,
+      containsSyntheticMedia: bundle.provenance?.containsSyntheticMedia === true
     };
     const profile = await this.db.getChannelProfile() || {};
     const quality = await this.operator.runQualityChecks(productionData, profile);
@@ -1210,7 +1249,8 @@ class YouTubeAutomationAgent {
         thumbnail: productionData.assets.thumbnail,
         video: productionData.assets.finalVideo,
         captions: productionData.assets.captions,
-        privacyStatus: editorData.privacyStatus || process.env.DEFAULT_PRIVACY_STATUS || 'private'
+        privacyStatus: editorData.privacyStatus || process.env.DEFAULT_PRIVACY_STATUS || 'private',
+        containsSyntheticMedia: productionData.containsSyntheticMedia
       };
       await this.db.updateScheduleEntry(scheduleEntry);
       await this.agents.publishing.loadPublishQueue();

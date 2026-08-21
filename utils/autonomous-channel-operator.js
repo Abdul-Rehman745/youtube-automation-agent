@@ -125,6 +125,7 @@ class AutonomousChannelOperator {
           if (job && ['failed', 'interrupted'].includes(job.status)) {
             job = await this.resumeGenerationJob(job.id);
           } else if (!job || !['queued', 'running', 'completed'].includes(job.status)) {
+            const selectedSourceUrls = new Set(item.sourceUrls || []);
             job = await this.startGenerationJob({
               topic: item.topic,
               style: item.format,
@@ -136,7 +137,8 @@ class AutonomousChannelOperator {
                 audience: strategy.audience,
                 objective: strategy.objective,
                 valueProposition: strategy.value_proposition,
-                constraints: strategy.constraints
+                constraints: strategy.constraints,
+                researchSources: (research.sourceCatalog || []).filter(source => selectedSourceUrls.has(source.url))
               }
             });
           }

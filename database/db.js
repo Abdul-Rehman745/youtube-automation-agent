@@ -267,6 +267,18 @@ class Database {
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (production_id) REFERENCES productions(id)
       )`,
+      `CREATE TABLE IF NOT EXISTS content_provenance (
+        production_id TEXT PRIMARY KEY,
+        sources TEXT NOT NULL DEFAULT '[]',
+        claims TEXT NOT NULL DEFAULT '[]',
+        contains_synthetic_media INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'not_required',
+        summary TEXT NOT NULL DEFAULT '{}',
+        reviewed_at TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (production_id) REFERENCES productions(id)
+      )`,
       `CREATE TABLE IF NOT EXISTS channel_profiles (
         id TEXT PRIMARY KEY,
         channel_name TEXT,
@@ -585,6 +597,7 @@ class Database {
       'SELECT * FROM publish_schedule WHERE production_id = ? ORDER BY created_at DESC LIMIT 1',
       [productionId]
     );
+    const provenance = await this.getContentProvenance(productionId);
     return {
       ...row,
       assets: JSON.parse(row.assets || '{}'),
@@ -595,7 +608,11 @@ class Database {
       seo: JSON.parse(row.seo || '{}'),
       editorData: JSON.parse(row.editor_data || '{}'),
       qualityChecks: JSON.parse(row.quality_checks || '[]'),
-      schedule: schedule ? { ...schedule, metadata: JSON.parse(schedule.metadata || '{}') } : null
+      schedule: schedule ? { ...schedule, metadata: JSON.parse(schedule.metadata || '{}') } : null,
+      provenance: provenance || {
+        sources: [], claims: [], containsSyntheticMedia: false, status: 'not_required',
+        summary: { sourceCount: 0, verifiedSources: 0, claimCount: 0, resolvedClaims: 0, highRiskClaims: 0, unresolvedClaims: 0 }
+      }
     };
   }
 
@@ -777,6 +794,41 @@ class Database {
       ]
     );
     return this.getProductionBundle(productionId);
+  }
+
+  async saveContentProvenance(productionId, provenance = {}) {
+    await this.executeQuery(
+      `INSERT INTO content_provenance (
+        production_id, sources, claims, contains_synthetic_media, status, summary, reviewed_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(production_id) DO UPDATE SET
+        sources = excluded.sources, claims = excluded.claims,
+        contains_synthetic_media = excluded.contains_synthetic_media,
+        status = excluded.status, summary = excluded.summary,
+        reviewed_at = excluded.reviewed_at, updated_at = datetime('now')`,
+      [
+        productionId,
+        JSON.stringify(provenance.sources || []),
+        JSON.stringify(provenance.claims || []),
+        Number(provenance.containsSyntheticMedia === true),
+        provenance.status || 'not_required',
+        JSON.stringify(provenance.summary || {}),
+        provenance.reviewedAt || null
+      ]
+    );
+    return this.getContentProvenance(productionId);
+  }
+
+  async getContentProvenance(productionId) {
+    const row = await this.getRow('SELECT * FROM content_provenance WHERE production_id = ?', [productionId]);
+    return row ? {
+      ...row,
+      sources: JSON.parse(row.sources || '[]'),
+      claims: JSON.parse(row.claims || '[]'),
+      containsSyntheticMedia: Boolean(row.contains_synthetic_media),
+      summary: JSON.parse(row.summary || '{}'),
+      reviewedAt: row.reviewed_at
+    } : null;
   }
 
   async getChannelProfile() {

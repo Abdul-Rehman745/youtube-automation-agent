@@ -8,15 +8,15 @@ Research topics → write scripts → generate narration and visuals → assembl
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js 18+](https://img.shields.io/badge/node-18%2B-43853d.svg)](package.json)
 
-## What's new in version 2.7.0
+## What's new in version 2.8.0
 
-Version 2.7 makes long-running production recoverable instead of disposable:
+Version 2.8 adds an evidence-first Research & Provenance Desk to every production:
 
-- **Resumable generation:** strategy, script, thumbnail, SEO, production, and quality-review stages persist as checkpoints and resume from the first unfinished stage.
-- **Selective retry controls:** choose exactly which stage to regenerate while reusing earlier verified artifacts and tracking saved stages in the dashboard.
-- **Operator-run recovery:** interrupted autonomous runs continue from their saved research, editorial plan, ideas, and generation jobs.
-- **Duplicate-upload protection:** YouTube video IDs are persisted immediately; known uploads are reconciled, while uncertain outcomes stop for manual verification instead of uploading twice.
-- **Bounded transient retries:** retry-safe provider and network failures receive one backoff retry without weakening approval, rights, readiness, or publishing gates.
+- **Source-aware research:** YouTube trend and competitor signals retain their exact video URLs, titles, publishers, and publication dates through autonomous planning.
+- **Claim ledger:** AI scripts declare externally verifiable claims and connect them only to sources supplied by the research stage.
+- **Evidence review:** Review Studio lets an operator add and verify sources, mark claims supported, unsupported, or explicitly waived, and record reviewer notes.
+- **Fail-closed approval:** unresolved claims block approval; a supported claim must link to at least one reviewer-verified source, and a waiver requires a note.
+- **Disclosure handoff:** realistic altered or synthetic media can be declared in Review Studio and is passed to YouTube's upload metadata.
 
 See the complete release history in [CHANGELOG.md](CHANGELOG.md).
 
@@ -55,6 +55,14 @@ Results persist locally in SQLite with exact remediation steps. A recorded block
 Every generation stage writes a local SQLite checkpoint. If a provider times out or the application restarts, the dashboard shows the saved-stage count and the first incomplete stage. Choose **Resume** to continue from there, or select an earlier stage when you intentionally want to regenerate that stage and everything after it. Saved files are validated before reuse; missing artifacts are regenerated automatically.
 
 Autonomous Operator runs preserve their research and editorial plan, so **Resume run** continues unfinished plan items instead of researching and generating completed videos again. Publishing remains fail-closed: if an upload may have reached YouTube but no video ID was returned, Lumen requires channel reconciliation before another upload attempt.
+
+### Review research and provenance
+
+Every production has an **Evidence desk** inside Review Studio. Autonomous research carries exact YouTube source metadata into the production, while AI-generated scripts list the factual claims that need review. Add any official articles, datasets, asset licenses, or other evidence that the script needs, verify each source, and connect it to the claims it supports.
+
+A claim can be approved only when it links to a verified source. Unsupported claims remain blocking, and an intentional waiver requires a reviewer note. Productions with no externally verifiable factual claims are marked as not requiring provenance review. The separate factual-review and media-rights attestations remain required before scheduling.
+
+Use the altered or synthetic media control only when the video contains realistic content that requires YouTube disclosure. The selected value is preserved in the publishing queue and included in the YouTube upload request.
 
 ### What you need
 

@@ -72,7 +72,8 @@ class PublishingSchedulingAgent {
           thumbnail: productionData.assets.thumbnail,
           video: productionData.assets.finalVideo,
           captions: productionData.assets.captions,
-          privacyStatus: productionData.privacyStatus || process.env.DEFAULT_PRIVACY_STATUS || 'private'
+          privacyStatus: productionData.privacyStatus || process.env.DEFAULT_PRIVACY_STATUS || 'private',
+          containsSyntheticMedia: productionData.containsSyntheticMedia === true
         },
         createdAt: new Date().toISOString()
       };
@@ -100,6 +101,15 @@ class PublishingSchedulingAgent {
           const error = new Error(`Publishing is blocked by the production readiness gate. Fix ${failures.join(', ')} and run the check again.`);
           error.status = 409;
           error.code = 'READINESS_BLOCKED';
+          throw error;
+        }
+      }
+      if (this.db.getProductionBundle) {
+        const bundle = await this.db.getProductionBundle(contentId);
+        if (bundle && !['verified', 'not_required'].includes(bundle.provenance?.status || 'not_required')) {
+          const error = new Error('Publishing is blocked until every factual claim is supported or explicitly waived');
+          error.status = 409;
+          error.code = 'PROVENANCE_BLOCKED';
           throw error;
         }
       }
@@ -188,7 +198,8 @@ class PublishingSchedulingAgent {
       status: {
         privacyStatus: metadata.privacyStatus || process.env.DEFAULT_PRIVACY_STATUS || 'private',
         publishAt: scheduleEntry.publishTime,
-        selfDeclaredMadeForKids: false
+        selfDeclaredMadeForKids: false,
+        containsSyntheticMedia: metadata.containsSyntheticMedia === true
       }
     };
     
