@@ -5,6 +5,7 @@ class AutonomousChannelOperator {
     this.db = db;
     this.researchAndPlan = options.researchAndPlan;
     this.startGenerationJob = options.startGenerationJob;
+    this.resumeGenerationJob = options.resumeGenerationJob;
     this.waitForGenerationJob = options.waitForGenerationJob;
     this.notify = options.notify || (async () => null);
     this.logger = new Logger('AutonomousOperator');
@@ -32,25 +33,84 @@ class AutonomousChannelOperator {
     return run;
   }
 
-  async execute(runId, strategy) {
+  async resume(runId, strategy) {
+    const run = await this.db.getOperatorRun(runId);
+    if (!run) {
+      const error = new Error('Operator run not found');
+      error.status = 404;
+      throw error;
+    }
+    if (!['failed', 'interrupted', 'completed_with_issues'].includes(run.status)) {
+      const error = new Error('Only failed or interrupted operator runs can be resumed');
+      error.status = 409;
+      throw error;
+    }
+    if (!strategy || strategy.status !== 'active') {
+      const error = new Error('Activate the saved channel strategy before resuming this run');
+      error.status = 409;
+      throw error;
+    }
+    const active = await this.db.getActiveOperatorRun();
+    if (active || this.activeRuns.size) {
+      const error = new Error('An autonomous operator run is already active');
+      error.status = 409;
+      throw error;
+    }
+    await this.update(runId, {
+      status: 'queued',
+      stage: 'resuming',
+      error: null,
+      cancelRequested: false,
+      completedAt: null
+    });
+    const work = this.execute(runId, strategy, { resume: true })
+      .catch(error => this.logger.error(`Resumed operator run ${runId} failed:`, error))
+      .finally(() => this.activeRuns.delete(runId));
+    this.activeRuns.set(runId, work);
+    return this.db.getOperatorRun(runId);
+  }
+
+  async execute(runId, strategy, options = {}) {
     try {
-      await this.update(runId, { status: 'running', stage: 'researching', progress: 5, error: null });
-      const { research, plan } = await this.researchAndPlan(strategy);
+      const stored = options.resume ? await this.db.getOperatorRun(runId) : null;
+      let research = stored?.research || {};
+      let plan = stored?.plan || [];
+      const generatedJobs = stored?.generatedJobs || [];
+      await this.update(runId, {
+        status: 'running',
+        stage: plan.length ? 'resuming_plan' : 'researching',
+        progress: plan.length ? Math.max(20, stored?.progress || 20) : 5,
+        error: null,
+        cancelRequested: false,
+        completedAt: null
+      });
+      if (!plan.length) {
+        ({ research, plan } = await this.researchAndPlan(strategy));
+      }
       if (!plan.length) throw new Error('Research did not produce any usable content ideas');
       await this.assertNotCancelled(runId);
       await this.update(runId, { stage: 'planning', progress: 20, research, plan });
 
-      const generatedJobs = [];
       for (let index = 0; index < plan.length; index++) {
         await this.assertNotCancelled(runId);
         const item = plan[index];
-        const idea = await this.db.createContentIdea({
-          topic: item.topic,
-          angle: item.angle,
-          style: item.format,
-          status: 'generating',
-          rationale: item.rationale
-        });
+        let record = generatedJobs[index];
+        if (record?.status === 'completed') continue;
+        let ideaId = record?.ideaId;
+        if (!record) {
+          const idea = await this.db.createContentIdea({
+            topic: item.topic,
+            angle: item.angle,
+            style: item.format,
+            status: 'generating',
+            rationale: item.rationale
+          });
+          ideaId = idea.id;
+          record = { jobId: null, ideaId, topic: item.topic, status: 'queued', planIndex: index };
+          generatedJobs[index] = record;
+        } else if (ideaId) {
+          await this.db.updateContentIdea(ideaId, { status: 'generating' });
+        }
         const progress = 20 + Math.round((index / plan.length) * 70);
         await this.update(runId, {
           stage: `producing_${index + 1}_of_${plan.length}`,
@@ -58,40 +118,43 @@ class AutonomousChannelOperator {
           generatedJobs
         });
 
-        const record = { jobId: null, ideaId: idea.id, topic: item.topic, status: 'queued' };
-        generatedJobs.push(record);
         try {
           await this.update(runId, { generatedJobs });
           await this.assertNotCancelled(runId);
-          const job = await this.startGenerationJob({
-            topic: item.topic,
-            style: item.format,
-            length: item.length,
-            source: 'autonomous_operator',
-            strategyContext: {
-              angle: item.angle,
-              rationale: item.rationale,
-              audience: strategy.audience,
-              objective: strategy.objective,
-              valueProposition: strategy.value_proposition,
-              constraints: strategy.constraints
-            }
-          });
+          let job = record.jobId ? await this.db.getGenerationJob(record.jobId) : null;
+          if (job && ['failed', 'interrupted'].includes(job.status)) {
+            job = await this.resumeGenerationJob(job.id);
+          } else if (!job || !['queued', 'running', 'completed'].includes(job.status)) {
+            job = await this.startGenerationJob({
+              topic: item.topic,
+              style: item.format,
+              length: item.length,
+              source: 'autonomous_operator',
+              strategyContext: {
+                angle: item.angle,
+                rationale: item.rationale,
+                audience: strategy.audience,
+                objective: strategy.objective,
+                valueProposition: strategy.value_proposition,
+                constraints: strategy.constraints
+              }
+            });
+          }
           record.jobId = job.id;
           record.status = 'running';
           await this.update(runId, { generatedJobs });
-          const completed = await this.waitForGenerationJob(job.id);
+          const completed = job.status === 'completed' ? job : await this.waitForGenerationJob(job.id);
           record.status = completed.status;
           record.productionId = completed.production_id || null;
           record.reviewStatus = completed.details?.reviewStatus || null;
           record.error = completed.error || null;
-          await this.db.updateContentIdea(idea.id, {
+          if (ideaId) await this.db.updateContentIdea(ideaId, {
             status: completed.status === 'completed' ? 'generated' : 'failed'
           });
         } catch (error) {
           record.status = error.code === 'OPERATOR_CANCELLED' ? 'cancelled' : 'failed';
           record.error = error.message;
-          await this.db.updateContentIdea(idea.id, { status: 'failed' });
+          if (ideaId) await this.db.updateContentIdea(ideaId, { status: 'failed' });
           if (error.code === 'OPERATOR_CANCELLED') throw error;
         }
         await this.update(runId, {

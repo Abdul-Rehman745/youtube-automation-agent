@@ -26,6 +26,7 @@ class SystemTest {
       { name: 'Autonomous Channel Operator', test: () => this.testAutonomousChannelOperator() },
       { name: 'Closed-loop Channel Learning', test: () => this.testChannelLearningLoop() },
       { name: 'Production Readiness Gate', test: () => this.testProductionReadinessGate() },
+      { name: 'Resumable Generation Checkpoints', test: () => this.testResumableGenerationCheckpoints() },
       { name: 'API Validation and Security', test: () => this.testAPIValidationAndSecurity() },
       { name: 'Publishing Safety', test: () => this.testPublishingSafety() },
       { name: 'Multi-Provider Credential Validation', test: () => this.testCredentialValidation() },
@@ -342,6 +343,7 @@ class SystemTest {
     await db.initialize();
     const previousStrategy = await db.getChannelStrategy();
     let run;
+    let recoverableJob;
 
     try {
       const strategy = await db.saveChannelStrategy({
@@ -372,6 +374,7 @@ class SystemTest {
       }
 
       const receivedInputs = [];
+      let resumedJobs = 0;
       const operator = new AutonomousChannelOperator(db, {
         researchAndPlan: async () => planned,
         startGenerationJob: async input => {
@@ -383,7 +386,12 @@ class SystemTest {
           status: 'completed',
           production_id: `production-${jobId}`,
           details: { reviewStatus: 'needs_review' }
-        })
+        }),
+        resumeGenerationJob: async jobId => {
+          resumedJobs++;
+          await db.updateGenerationJob(jobId, { status: 'completed', productionId: `production-${jobId}` });
+          return db.getGenerationJob(jobId);
+        }
       });
       run = await operator.start(strategy);
       await operator.activeRuns.get(run.id);
@@ -394,6 +402,26 @@ class SystemTest {
         receivedInputs.some(input => input.source !== 'autonomous_operator' || !input.strategyContext?.angle)
       ) {
         throw new Error('Autonomous operator did not execute the planned workflow');
+      }
+
+      recoverableJob = await db.createGenerationJob({ topic: planned.plan[0].topic, source: 'autonomous_operator' });
+      await db.updateGenerationJob(recoverableJob.id, { status: 'interrupted', stage: 'script' });
+      const interruptedJobs = completed.generatedJobs.map((item, index) => index === 0
+        ? { ...item, jobId: recoverableJob.id, status: 'interrupted', reviewStatus: null }
+        : item);
+      await db.updateOperatorRun(run.id, {
+        status: 'interrupted',
+        stage: 'producing_1_of_2',
+        progress: 40,
+        generatedJobs: interruptedJobs,
+        error: 'The application restarted before this operator run finished',
+        completedAt: new Date().toISOString()
+      });
+      await operator.resume(run.id, strategy);
+      await operator.activeRuns.get(run.id);
+      const recoveredRun = await db.getOperatorRun(run.id);
+      if (resumedJobs !== 1 || recoveredRun.status !== 'waiting_review' || recoveredRun.generatedJobs[0].status !== 'completed') {
+        throw new Error('Autonomous operator did not continue from its saved plan and interrupted job');
       }
     } finally {
       if (run) {
@@ -420,6 +448,7 @@ class SystemTest {
       } else {
         await db.executeQuery("DELETE FROM channel_strategies WHERE id = 'default'");
       }
+      if (recoverableJob) await db.executeQuery('DELETE FROM generation_jobs WHERE id = ?', [recoverableJob.id]);
       await db.close();
     }
 
@@ -624,6 +653,145 @@ class SystemTest {
     this.logger.info('Production readiness gate test completed successfully');
   }
 
+  async testResumableGenerationCheckpoints() {
+    const fs = require('fs').promises;
+    const os = require('os');
+    const { YouTubeAutomationAgent } = require('./index');
+    const { GenerationRecoveryService } = require('./utils/generation-recovery-service');
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'yaa-recovery-'));
+    const db = new Database();
+    db.dbPath = path.join(directory, 'recovery.db');
+    await db.initialize();
+
+    const thumbnailPath = path.join(directory, 'thumbnail.jpg');
+    const videoPath = path.join(directory, 'video.mp4');
+    await fs.writeFile(thumbnailPath, Buffer.from('thumbnail'));
+    await fs.writeFile(videoPath, Buffer.from('video'));
+    const strategy = {
+      topic: 'Checkpointed automation',
+      contentType: 'Tutorial',
+      requestedStyle: 'tutorial',
+      requestedLengthKey: 'short'
+    };
+    const script = {
+      title: 'Checkpointed automation',
+      fullScript: 'A complete script that can be reused after an interrupted generation run.',
+      mainContent: [{ text: 'Reusable content' }]
+    };
+    let strategyCalls = 0;
+    let scriptCalls = 0;
+    let productionCalls = 0;
+
+    try {
+      const agent = new YouTubeAutomationAgent();
+      agent.db = db;
+      agent.recovery = new GenerationRecoveryService(db, {
+        logger: agent.logger,
+        baseDelayMs: 0,
+        updateJobStage: (...args) => agent.updateJobStage(...args)
+      });
+      agent.readiness = { assertReady: async () => true };
+      agent.operator = {
+        runQualityChecks: async () => ({ passed: true, score: 100, checks: [{ passed: true }], blockingFailures: [] }),
+        notify: async () => null
+      };
+      agent.agents = {
+        strategy: { generateContentStrategy: async () => { strategyCalls++; return strategy; } },
+        scriptWriter: { generateScript: async () => { scriptCalls++; return script; } },
+        thumbnailDesigner: { generateThumbnail: async () => ({ path: thumbnailPath, concept: {} }) },
+        seoOptimizer: { optimize: async () => ({ title: script.title, description: 'A complete description.', tags: ['automation'] }) },
+        production: {
+          processContent: async input => {
+            productionCalls++;
+            return {
+              id: `recovery-production-${Date.now()}`,
+              status: 'ready',
+              ...input,
+              assets: {
+                finalVideo: { path: videoPath, simulated: false },
+                thumbnail: { path: thumbnailPath }
+              },
+              timeline: {},
+              scheduledPublishTime: new Date(Date.now() + 86400000).toISOString(),
+              priority: 50,
+              estimatedDuration: '2:00'
+            };
+          }
+        },
+        publishing: { scheduleContent: async () => null }
+      };
+
+      const job = await db.createGenerationJob({
+        topic: strategy.topic,
+        style: 'tutorial',
+        length: 'short',
+        source: 'manual',
+        strategyContext: { objective: 'Test recovery' }
+      });
+      await db.saveGenerationCheckpoint(job.id, 'strategy', {
+        status: 'completed', artifact: strategy, completedAt: new Date().toISOString()
+      });
+      await db.saveGenerationCheckpoint(job.id, 'script', {
+        status: 'completed', artifact: script, completedAt: new Date().toISOString()
+      });
+      await db.updateGenerationJob(job.id, { status: 'running', stage: 'thumbnail', progress: 40 });
+      await db.markInterruptedJobs();
+      const interrupted = await db.getGenerationJob(job.id);
+      if (interrupted.status !== 'interrupted' || interrupted.stage !== 'thumbnail') {
+        throw new Error('Restart recovery did not preserve the interrupted stage');
+      }
+
+      const resumed = await agent.resumeGenerationJob(job.id);
+      if (resumed.details?.resumeFrom !== 'thumbnail') {
+        throw new Error('Resume did not select the first incomplete stage');
+      }
+      await agent.waitForGenerationJob(job.id);
+      const completed = await db.getGenerationJob(job.id);
+      const checkpoints = await db.listGenerationCheckpoints(job.id);
+      if (
+        completed.status !== 'completed' ||
+        checkpoints.filter(item => item.status === 'completed').length !== 6 ||
+        strategyCalls !== 0 || scriptCalls !== 0 || productionCalls !== 1 ||
+        !completed.details.reusedStages.includes('strategy') || !completed.details.reusedStages.includes('script')
+      ) {
+        throw new Error('Generation did not resume from verified checkpoints');
+      }
+
+      let transientAttempts = 0;
+      const transientJob = await db.createGenerationJob({ topic: 'Transient retry' });
+      const recovered = await agent.recovery.run(transientJob.id, 'strategy', 10, async () => {
+        transientAttempts++;
+        if (transientAttempts === 1) {
+          const error = new Error('Temporary provider failure');
+          error.status = 503;
+          throw error;
+        }
+        return { topic: 'Recovered strategy' };
+      });
+      const transientCheckpoint = await db.getGenerationCheckpoint(transientJob.id, 'strategy');
+      if (recovered.topic !== 'Recovered strategy' || transientAttempts !== 2 || transientCheckpoint.attempt_count !== 2) {
+        throw new Error('A retry-safe transient stage failure was not recovered with bounded attempts');
+      }
+
+      const invalidJob = await db.createGenerationJob({ topic: 'Invalid dependency' });
+      await db.saveGenerationCheckpoint(invalidJob.id, 'strategy', {
+        status: 'completed', artifact: {}, completedAt: new Date().toISOString()
+      });
+      await db.saveGenerationCheckpoint(invalidJob.id, 'script', {
+        status: 'completed', artifact: script, completedAt: new Date().toISOString()
+      });
+      await agent.recovery.run(invalidJob.id, 'strategy', 10, async () => ({ topic: 'Rebuilt dependency' }));
+      if (await db.getGenerationCheckpoint(invalidJob.id, 'script')) {
+        throw new Error('A stale downstream checkpoint survived invalid upstream artifact recovery');
+      }
+    } finally {
+      await db.close();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+
+    this.logger.info('Resumable generation checkpoints test completed successfully');
+  }
+
   async testAPIValidationAndSecurity() {
     const { YouTubeAutomationAgent } = require('./index');
     const agent = new YouTubeAutomationAgent();
@@ -753,6 +921,61 @@ class SystemTest {
 
     if (!missingFileRejected) {
       throw new Error('getVideoStream did not reject a missing video file');
+    }
+
+    let uncertainUpdates = [];
+    const uncertain = new PublishingSchedulingAgent({
+      updateScheduleEntry: async entry => uncertainUpdates.push({ ...entry })
+    }, {});
+    uncertain.publishQueue = [
+      { id: 'schedule-uncertain', productionId: 'prod-uncertain', title: 'Uncertain', status: 'scheduled', metadata: {} }
+    ];
+    let uploadAttempts = 0;
+    uncertain.uploadToYouTube = async entry => {
+      uploadAttempts++;
+      entry.uploadAttempted = true;
+      const error = new Error('socket closed during upload');
+      error.code = 'ECONNRESET';
+      throw error;
+    };
+    let uncertainBlocked = false;
+    try {
+      await uncertain.publishContent('prod-uncertain');
+    } catch (error) {
+      uncertainBlocked = error.code === 'UPLOAD_OUTCOME_UNKNOWN';
+    }
+    try {
+      await uncertain.publishContent('prod-uncertain');
+    } catch (error) {
+      uncertainBlocked = uncertainBlocked && error.code === 'UPLOAD_OUTCOME_UNKNOWN';
+    }
+    if (!uncertainBlocked || uploadAttempts !== 1 || uncertainUpdates.at(-1)?.status !== 'reconciliation_required') {
+      throw new Error('An uncertain upload outcome was retried or failed to require reconciliation');
+    }
+
+    let reconciliationCalls = 0;
+    const recorded = {
+      id: 'schedule-recorded', productionId: 'prod-recorded', title: 'Recorded', status: 'uploaded',
+      youtubeId: 'youtube-existing', metadata: {}
+    };
+    const reconcile = new PublishingSchedulingAgent({
+      getLatestScheduleEntry: async () => recorded,
+      updateScheduleEntry: async () => {}
+    }, {});
+    reconcile.youtube = {
+      videos: {
+        list: async () => {
+          reconciliationCalls++;
+          return { data: { items: [{ id: 'youtube-existing' }] } };
+        }
+      }
+    };
+    reconcile.uploadToYouTube = async () => {
+      throw new Error('A recorded upload must never be uploaded again');
+    };
+    const reconciled = await reconcile.publishContent('prod-recorded');
+    if (reconciled.status !== 'published' || reconciliationCalls !== 1) {
+      throw new Error('A recorded YouTube upload was not reconciled idempotently');
     }
 
     this.logger.info('Publishing safety test completed successfully');

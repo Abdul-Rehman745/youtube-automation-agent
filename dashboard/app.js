@@ -109,7 +109,7 @@ function renderDashboard() {
   const state = ui.state;
   const reviews = state.pipeline.filter(item => ['needs_review', 'needs_attention'].includes(item.review_status));
   const scheduled = state.schedule.filter(item => item.status === 'scheduled');
-  const activeJobs = state.jobs.filter(job => ['queued', 'running'].includes(job.status));
+  const actionableJobs = state.jobs.filter(job => ['queued', 'running', 'failed', 'interrupted'].includes(job.status));
 
   $('#brand-name').textContent = state.profile?.channel_name || 'Automation Studio';
   $('#setup-banner').classList.toggle('hidden', !state.system.setupRequired);
@@ -129,7 +129,7 @@ function renderDashboard() {
   $('#stat-score').textContent = state.analytics.averagePerformanceScore ? `${state.analytics.averagePerformanceScore}/100` : '—';
 
   renderReviews(reviews);
-  renderJobs(activeJobs.length ? activeJobs : state.jobs.slice(0, 5));
+  renderJobs(actionableJobs.length ? actionableJobs : state.jobs.slice(0, 5));
   renderSchedule(state.schedule.slice(0, 5), '#next-schedule');
   renderNotifications(state.notifications, state.events);
   renderPipeline(state.pipeline);
@@ -192,15 +192,24 @@ function renderJobs(jobs) {
     container.innerHTML = empty('No generation runs yet.');
     return;
   }
-  container.innerHTML = jobs.slice(0, 6).map(job => `
+  const stages = ['strategy', 'script', 'thumbnail', 'seo', 'production', 'quality_review'];
+  container.innerHTML = jobs.slice(0, 6).map(job => {
+    const checkpoints = Array.isArray(job.checkpoints) ? job.checkpoints : [];
+    const completed = new Set(checkpoints.filter(item => item.status === 'completed').map(item => item.stage));
+    const resumeFrom = stages.find(stage => !completed.has(stage)) || 'quality_review';
+    const recoverable = ['failed', 'interrupted'].includes(job.status);
+    return `
     <article class="job-card">
       <div class="job-meta">
         <strong>${escapeHTML(job.title || job.topic || 'Agent-selected topic')}</strong>
         <div class="meta-line">${statusChip(job.status)} · ${escapeHTML(label(job.stage))} · ${timeAgo(job.updated_at)}</div>
+        ${checkpoints.length ? `<div class="checkpoint-line">${completed.size}/${stages.length} stages saved${job.details?.reusedStages?.length ? ` · ${job.details.reusedStages.length} reused` : ''}</div>` : ''}
         <div class="progress"><i style="width:${Math.max(0, Math.min(100, job.progress || 0))}%"></i></div>
       </div>
       ${['queued', 'running'].includes(job.status) ? `<button class="text-button" data-cancel-job="${escapeHTML(job.id)}">Cancel</button>` : ''}
-    </article>`).join('');
+      ${recoverable ? `<div class="job-recovery"><select data-resume-stage-for="${escapeHTML(job.id)}" aria-label="Stage to resume from">${stages.map(stage => `<option value="${stage}" ${stage === resumeFrom ? 'selected' : ''}>${escapeHTML(label(stage))}</option>`).join('')}</select><button class="button secondary small" data-resume-job="${escapeHTML(job.id)}">Resume</button></div>` : ''}
+    </article>`;
+  }).join('');
 }
 
 function renderSchedule(schedule, selector) {
@@ -376,12 +385,16 @@ function renderOperator(strategy, runs, system) {
   $('#operator-strategy-status').textContent = label(strategyStatus);
   const run = runs[0];
   const active = run && ['queued', 'running', 'cancelling'].includes(run.status);
+  const recoverable = run && ['failed', 'interrupted', 'completed_with_issues'].includes(run.status);
   $('#activate-operator-button').disabled = Boolean(system.setupRequired || active || system.readiness?.status === 'failed');
   $('#activate-operator-button').title = system.readiness?.status === 'failed' ? 'Resolve the production readiness failures first' : '';
   $('#activate-operator-button').textContent = strategy?.status === 'active' ? 'Run strategy now' : 'Activate & run now';
   $('#pause-operator-button').classList.toggle('hidden', strategy?.status !== 'active');
   $('#cancel-operator-run').classList.toggle('hidden', !active);
   if (active) $('#cancel-operator-run').dataset.runId = run.id;
+  $('#resume-operator-run').classList.toggle('hidden', !recoverable);
+  $('#resume-operator-run').disabled = Boolean(system.setupRequired || system.readiness?.status === 'failed');
+  if (recoverable) $('#resume-operator-run').dataset.runId = run.id;
 
   if (!run) {
     $('#operator-run-title').textContent = 'Waiting for a strategy';
@@ -558,6 +571,16 @@ document.addEventListener('click', async event => {
     await mutate(`/api/ideas/${encodeURIComponent(idea.dataset.generateIdea)}/generate`, 'POST', { length: 'medium' }, 'Idea queued for generation.').catch(() => {});
   }
 
+  const resume = event.target.closest('[data-resume-job]');
+  if (resume) {
+    const jobId = resume.dataset.resumeJob;
+    const select = $$('[data-resume-stage-for]').find(item => item.dataset.resumeStageFor === jobId);
+    const stage = select?.value;
+    if (confirm(`Resume this job from ${label(stage)}? Later checkpoints will be regenerated.`)) {
+      await mutate(`/api/jobs/${encodeURIComponent(jobId)}/resume`, 'POST', { stage }, `Generation resumed from ${label(stage)}.`).catch(() => {});
+    }
+  }
+
   const learning = event.target.closest('[data-learning-action]');
   if (learning) {
     const action = learning.dataset.learningAction;
@@ -659,6 +682,13 @@ $('#cancel-operator-run').addEventListener('click', async event => {
   const runId = event.currentTarget.dataset.runId;
   if (runId && confirm('Stop this autonomous run after the current agent stage?')) {
     await mutate(`/api/operator/runs/${encodeURIComponent(runId)}/cancel`, 'POST', {}, 'Operator stop requested.').catch(() => {});
+  }
+});
+
+$('#resume-operator-run').addEventListener('click', async event => {
+  const runId = event.currentTarget.dataset.runId;
+  if (runId && confirm('Resume this operator run from its saved editorial plan and generation checkpoints?')) {
+    await mutate(`/api/operator/runs/${encodeURIComponent(runId)}/resume`, 'POST', {}, 'Autonomous operator resumed.').catch(() => {});
   }
 });
 

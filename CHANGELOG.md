@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## v2.7.0 — 2026-08-21
+
+- Added persistent per-stage generation checkpoints with artifact validation, bounded retry-safe backoff, and resume-from-first-incomplete behavior
+- Added dashboard controls to resume failed or interrupted jobs from a selected stage while showing saved and reused stages
+- Added Autonomous Channel Operator recovery from stored research, editorial plans, ideas, and interrupted generation jobs
+- Preserved the actual generation stage across application restarts instead of replacing it with a generic interrupted stage
+- Made scheduling idempotent per production and added YouTube upload reconciliation so recorded or uncertain uploads cannot be duplicated automatically
+- Added API endpoints for individual-job and operator-run recovery plus regression coverage for restart, reuse, transient retry, and duplicate-upload safety
+
 ## v2.6.0 — 2026-08-20
 
 - Added a user-triggered Production Readiness Gate with live text, narration, YouTube-access, local audio/video MP4, and queued-metadata probes; paid image verification is explicit opt-in

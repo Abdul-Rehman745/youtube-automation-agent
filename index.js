@@ -19,6 +19,7 @@ const { AutonomousChannelOperator } = require('./utils/autonomous-channel-operat
 const { ActivationMetrics } = require('./utils/activation-metrics');
 const { AnonymousTelemetry } = require('./utils/anonymous-telemetry');
 const { ProductionReadinessService } = require('./utils/production-readiness-service');
+const { GenerationRecoveryService, GENERATION_STAGES } = require('./utils/generation-recovery-service');
 const { version } = require('./package.json');
 const chalk = require('chalk');
 
@@ -36,6 +37,7 @@ class YouTubeAutomationAgent {
     this.activation = null;
     this.telemetry = null;
     this.readiness = null;
+    this.recovery = null;
     this.setupRequired = false;
   }
 
@@ -49,6 +51,10 @@ class YouTubeAutomationAgent {
       this.db = new Database();
       await this.db.initialize();
       await this.db.markInterruptedJobs();
+      this.recovery = new GenerationRecoveryService(this.db, {
+        logger: this.logger,
+        updateJobStage: (...args) => this.updateJobStage(...args)
+      });
       this.operator = new OperatorService(this.db);
       this.autonomous = new AutonomousChannelOperator(this.db, {
         researchAndPlan: strategy => {
@@ -56,6 +62,7 @@ class YouTubeAutomationAgent {
           return this.agents.strategy.researchAndPlanChannel(strategy);
         },
         startGenerationJob: input => this.startGenerationJob(input),
+        resumeGenerationJob: (jobId, options) => this.resumeGenerationJob(jobId, options),
         waitForGenerationJob: jobId => this.waitForGenerationJob(jobId),
         notify: notification => this.operator.notify(notification)
       });
@@ -388,7 +395,7 @@ class YouTubeAutomationAgent {
         const result = await this.agents.publishing.publishContent(contentId);
         res.json({ success: true, result });
       } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        res.status(error.status || 500).json({ success: false, error: error.message });
       }
     });
 
@@ -447,7 +454,18 @@ class YouTubeAutomationAgent {
     this.app.get('/api/jobs/:jobId', async (req, res) => {
       const job = await this.db.getGenerationJob(req.params.jobId);
       if (!job) return res.status(404).json({ error: 'Job not found' });
+      job.checkpoints = await this.db.listGenerationCheckpoints(job.id);
+      job.resumeFrom = this.recovery?.resumePoint(job.checkpoints);
       return res.json(job);
+    });
+
+    this.app.post('/api/jobs/:jobId/resume', protect, async (req, res) => {
+      try {
+        const result = await this.resumeGenerationJob(req.params.jobId, { stage: req.body?.stage });
+        return res.status(202).json({ success: true, result });
+      } catch (error) {
+        return res.status(error.status || 400).json({ success: false, error: error.message });
+      }
     });
 
     this.app.get('/api/readiness', async (_req, res) => {
@@ -619,6 +637,20 @@ class YouTubeAutomationAgent {
       return res.json({ success: true, result: run });
     });
 
+    this.app.post('/api/operator/runs/:runId/resume', protect, async (req, res) => {
+      try {
+        if (this.setupRequired || !this.agents.strategy) {
+          return res.status(503).json({ success: false, error: 'Finish setup before resuming the autonomous operator' });
+        }
+        await this.readiness?.assertReady('Autonomous production recovery');
+        const strategy = await this.db.getChannelStrategy();
+        const run = await this.autonomous.resume(req.params.runId, strategy);
+        return res.status(202).json({ success: true, result: run });
+      } catch (error) {
+        return res.status(error.status || 400).json({ success: false, error: error.message });
+      }
+    });
+
     this.app.post('/api/learning/recommendations/:recommendationId/:action', protect, async (req, res) => {
       const { recommendationId, action } = req.params;
       if (!['approve', 'reject'].includes(action)) {
@@ -722,6 +754,71 @@ class YouTubeAutomationAgent {
     return job;
   }
 
+  async resumeGenerationJob(jobId, options = {}) {
+    if (this.setupRequired || !this.agents.strategy) {
+      const error = new Error('Finish setup with npm run walkthrough before resuming content generation');
+      error.status = 503;
+      throw error;
+    }
+    const job = await this.db.getGenerationJob(jobId);
+    if (!job) {
+      const error = new Error('Generation job not found');
+      error.status = 404;
+      throw error;
+    }
+    if (!['failed', 'interrupted'].includes(job.status)) {
+      const error = new Error('Only failed or interrupted generation jobs can be resumed');
+      error.status = 409;
+      throw error;
+    }
+    if (this.activeJobs.has(job.id)) {
+      const error = new Error('This generation job is already running');
+      error.status = 409;
+      throw error;
+    }
+    const maxConcurrent = Math.max(1, parseInt(process.env.MAX_CONCURRENT_JOBS || '1', 10));
+    if (this.activeJobs.size >= maxConcurrent) {
+      const error = new Error(`Generation is busy (${this.activeJobs.size}/${maxConcurrent} active jobs). Try again when the current job finishes.`);
+      error.status = 429;
+      throw error;
+    }
+    if (['scheduler', 'autonomous_operator'].includes(job.source)) {
+      await this.readiness?.assertReady('Automated generation recovery');
+    }
+
+    const checkpoints = await this.db.listGenerationCheckpoints(job.id);
+    const resumeFrom = options.stage || this.recovery.resumePoint(checkpoints);
+    if (!GENERATION_STAGES.includes(resumeFrom)) {
+      const error = new Error('Resume stage is not supported');
+      error.status = 400;
+      throw error;
+    }
+    if (options.stage) await this.recovery.resetFrom(job.id, resumeFrom);
+    const input = {
+      topic: job.topic,
+      style: job.style,
+      length: job.length || 'medium',
+      strategyContext: job.details?.strategyContext || {}
+    };
+    const updated = await this.db.updateGenerationJob(job.id, {
+      status: 'queued',
+      stage: resumeFrom,
+      error: null,
+      cancelRequested: false,
+      completedAt: null,
+      details: {
+        resumeCount: Number(job.details?.resumeCount || 0) + 1,
+        resumeFrom,
+        failedStage: null
+      }
+    });
+    const work = this.runGenerationJob(job.id, input)
+      .catch(error => this.logger.error(`Resumed generation job ${job.id} failed:`, error))
+      .finally(() => this.activeJobs.delete(job.id));
+    this.activeJobs.set(job.id, work);
+    return updated;
+  }
+
   async waitForGenerationJob(jobId) {
     const work = this.activeJobs.get(jobId);
     if (work) await work;
@@ -749,7 +846,7 @@ class YouTubeAutomationAgent {
 
   async runGenerationJob(jobId, input) {
     try {
-      await this.db.updateGenerationJob(jobId, { status: 'running', stage: 'starting', progress: 2, error: null });
+      await this.db.updateGenerationJob(jobId, { status: 'running', progress: 2, error: null, completedAt: null });
       const result = await this.generateContent(input.topic, input.style, input.length, {
         jobId,
         strategyContext: input.strategyContext
@@ -767,10 +864,13 @@ class YouTubeAutomationAgent {
       return result;
     } catch (error) {
       const cancelled = error.code === 'JOB_CANCELLED';
+      const current = await this.db.getGenerationJob(jobId);
+      const failedStage = current?.stage || 'starting';
       await this.db.updateGenerationJob(jobId, {
         status: cancelled ? 'cancelled' : 'failed',
-        stage: cancelled ? 'cancelled' : 'failed',
+        stage: failedStage,
         error: error.message,
+        details: { failedStage },
         completedAt: new Date().toISOString()
       });
       await this.operator.notify({
@@ -802,102 +902,129 @@ class YouTubeAutomationAgent {
     const lengthLabels = { short: '2-4 minutes', medium: '8-12 minutes', long: '15-20 minutes' };
 
     // Step 1: Strategy
-    await this.updateJobStage(jobId, 'strategy', 10);
-    const strategy = await this.agents.strategy.generateContentStrategy(topic);
-    const contentStyles = new Set(['tutorial', 'explainer', 'list', 'review', 'story']);
-    const requestedStyle = style || profile.default_style || null;
-    if (requestedStyle && contentStyles.has(requestedStyle.toLowerCase())) {
-      strategy.contentType = requestedStyle.charAt(0).toUpperCase() + requestedStyle.slice(1).toLowerCase();
-    }
-    strategy.requestedStyle = requestedStyle;
-    strategy.requestedLengthKey = length;
-    strategy.requestedLength = lengthLabels[length] || lengthLabels.medium;
-    strategy.angle = strategyContext.angle || strategy.angle;
-    strategy.planRationale = strategyContext.rationale || null;
-    strategy.targetAudience = strategyContext.audience || profile.target_audience || strategy.targetAudience;
-    strategy.brandVoice = profile.brand_voice || null;
-    strategy.channelGoal = strategyContext.objective || profile.goal || null;
-    strategy.channelValueProposition = strategyContext.valueProposition || null;
-    strategy.channelConstraints = strategyContext.constraints || null;
-    strategy.callToAction = profile.call_to_action || null;
+    const strategy = await this.runGenerationStage(jobId, 'strategy', 10, async () => {
+      const generated = await this.agents.strategy.generateContentStrategy(topic);
+      const contentStyles = new Set(['tutorial', 'explainer', 'list', 'review', 'story']);
+      const requestedStyle = style || profile.default_style || null;
+      if (requestedStyle && contentStyles.has(requestedStyle.toLowerCase())) {
+        generated.contentType = requestedStyle.charAt(0).toUpperCase() + requestedStyle.slice(1).toLowerCase();
+      }
+      generated.requestedStyle = requestedStyle;
+      generated.requestedLengthKey = length;
+      generated.requestedLength = lengthLabels[length] || lengthLabels.medium;
+      generated.angle = strategyContext.angle || generated.angle;
+      generated.planRationale = strategyContext.rationale || null;
+      generated.targetAudience = strategyContext.audience || profile.target_audience || generated.targetAudience;
+      generated.brandVoice = profile.brand_voice || null;
+      generated.channelGoal = strategyContext.objective || profile.goal || null;
+      generated.channelValueProposition = strategyContext.valueProposition || null;
+      generated.channelConstraints = strategyContext.constraints || null;
+      generated.callToAction = profile.call_to_action || null;
+      return generated;
+    });
     this.logger.info(`Strategy generated: ${strategy.topic}`);
 
     // Step 2: Script Writing
-    await this.updateJobStage(jobId, 'script', 25, { topic: strategy.topic });
-    const script = await this.agents.scriptWriter.generateScript(strategy);
+    const script = await this.runGenerationStage(
+      jobId,
+      'script',
+      25,
+      () => this.agents.scriptWriter.generateScript(strategy)
+    );
     this.logger.info(`Script generated: ${script.title}`);
 
     // Step 3: Thumbnail Design
-    await this.updateJobStage(jobId, 'thumbnail', 40, { title: script.title });
-    const thumbnail = await this.agents.thumbnailDesigner.generateThumbnail(script);
+    const thumbnail = await this.runGenerationStage(
+      jobId,
+      'thumbnail',
+      40,
+      () => this.agents.thumbnailDesigner.generateThumbnail(script)
+    );
     this.logger.info('Thumbnail generated');
 
     // Step 4: SEO Optimization
-    await this.updateJobStage(jobId, 'seo', 52);
-    const seoData = await this.agents.seoOptimizer.optimize(script, strategy);
+    const seoData = await this.runGenerationStage(
+      jobId,
+      'seo',
+      52,
+      () => this.agents.seoOptimizer.optimize(script, strategy)
+    );
     this.logger.info('SEO optimization complete');
 
     // Step 5: Production Management
-    await this.updateJobStage(jobId, 'production', 62);
-    const productionData = await this.agents.production.processContent({
-      strategy,
-      script,
-      thumbnail,
-      seo: seoData
-    });
+    const productionData = await this.runGenerationStage(
+      jobId,
+      'production',
+      62,
+      () => this.agents.production.processContent({ strategy, script, thumbnail, seo: seoData })
+    );
     this.logger.info('Production processing complete');
 
-    const approvalRequired = await this.db.getSetting('approval_required') !== 'false';
-    const packagingExperiment = approvalRequired
-      ? await this.preparePackagingExperiment(thumbnail, productionData, seoData, script)
-      : null;
-
-    // Step 6: Save to database
+    // Re-persist reused production artifacts in case a restart happened between checkpointing and persistence.
     const contentId = await this.db.saveProductionData(productionData);
     await this.db.saveProductionSnapshot(productionData);
     this.logger.info(`Content saved with ID: ${contentId}`);
 
-    // Step 7: Quality and approval gate
-    await this.updateJobStage(jobId, 'quality_review', 90, { contentId });
-    const quality = await this.operator.runQualityChecks(productionData, profile);
-    const reviewStatus = quality.passed
-      ? (approvalRequired ? 'needs_review' : 'approved')
-      : 'needs_attention';
-    await this.db.saveContentReview(contentId, {
-      status: reviewStatus,
-      qualityChecks: quality.checks,
-      editorData: packagingExperiment ? {
-        packagingExperiment,
-        selectedTitleVariant: 0,
-        selectedThumbnailVariant: 0
-      } : {},
-      reviewNotes: quality.passed ? null : `Blocking checks failed: ${quality.blockingFailures.join(', ')}`,
-      reviewedAt: approvalRequired ? null : new Date().toISOString()
-    });
+    // Step 6: Quality and approval gate
+    return this.runGenerationStage(jobId, 'quality_review', 90, async () => {
+      const approvalRequired = await this.db.getSetting('approval_required') !== 'false';
+      const packagingExperiment = approvalRequired
+        ? await this.preparePackagingExperiment(thumbnail, productionData, seoData, script)
+        : null;
+      const quality = await this.operator.runQualityChecks(productionData, profile);
+      const reviewStatus = quality.passed
+        ? (approvalRequired ? 'needs_review' : 'approved')
+        : 'needs_attention';
+      await this.db.saveContentReview(contentId, {
+        status: reviewStatus,
+        qualityChecks: quality.checks,
+        editorData: packagingExperiment ? {
+          packagingExperiment,
+          selectedTitleVariant: 0,
+          selectedThumbnailVariant: 0
+        } : {},
+        reviewNotes: quality.passed ? null : `Blocking checks failed: ${quality.blockingFailures.join(', ')}`,
+        reviewedAt: approvalRequired ? null : new Date().toISOString()
+      });
 
-    let scheduleEntry = null;
-    if (reviewStatus === 'approved') {
-      scheduleEntry = await this.agents.publishing.scheduleContent(productionData);
-      await this.db.updateProductionStatus(contentId, scheduleEntry ? 'scheduled' : productionData.status);
-    } else {
-      await this.db.updateProductionStatus(contentId, reviewStatus);
-      await this.operator.notify({
-        type: 'review_required',
-        level: quality.passed ? 'info' : 'warning',
-        title: quality.passed ? 'Content ready for review' : 'Content needs attention',
-        message: `${script.title} ${quality.passed ? 'is ready for approval' : 'failed one or more quality checks'}`,
-        data: { contentId, qualityScore: quality.score }
+      let scheduleEntry = null;
+      if (reviewStatus === 'approved') {
+        scheduleEntry = await this.agents.publishing.scheduleContent(productionData);
+        await this.db.updateProductionStatus(contentId, scheduleEntry ? 'scheduled' : productionData.status);
+      } else {
+        await this.db.updateProductionStatus(contentId, reviewStatus);
+        await this.operator.notify({
+          type: 'review_required',
+          level: quality.passed ? 'info' : 'warning',
+          title: quality.passed ? 'Content ready for review' : 'Content needs attention',
+          message: `${script.title} ${quality.passed ? 'is ready for approval' : 'failed one or more quality checks'}`,
+          data: { contentId, qualityScore: quality.score }
+        });
+      }
+
+      return {
+        contentId,
+        title: script.title,
+        status: productionData.status,
+        reviewStatus,
+        qualityScore: quality.score,
+        scheduledFor: scheduleEntry ? scheduleEntry.publishTime : null
+      };
+    });
+  }
+
+  async runGenerationStage(jobId, stage, progress, producer) {
+    if (!jobId) {
+      await this.updateJobStage(jobId, stage, progress);
+      return producer();
+    }
+    if (!this.recovery) {
+      this.recovery = new GenerationRecoveryService(this.db, {
+        logger: this.logger,
+        updateJobStage: (...args) => this.updateJobStage(...args)
       });
     }
-
-    return {
-      contentId,
-      title: script.title,
-      status: productionData.status,
-      reviewStatus,
-      qualityScore: quality.score,
-      scheduledFor: scheduleEntry ? scheduleEntry.publishTime : null
-    };
+    return this.recovery.run(jobId, stage, progress, producer);
   }
 
   validateEditorData(input = {}, existing = {}) {

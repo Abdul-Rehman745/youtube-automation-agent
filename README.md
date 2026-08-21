@@ -8,14 +8,15 @@ Research topics → write scripts → generate narration and visuals → assembl
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js 18+](https://img.shields.io/badge/node-18%2B-43853d.svg)](package.json)
 
-## What's new in version 2.6.0
+## What's new in version 2.7.0
 
-Version 2.6 turns the agent into a safer, self-improving channel operator:
+Version 2.7 makes long-running production recoverable instead of disposable:
 
-- **Autonomous Channel Operator:** define the audience, objective, content pillars, cadence, and guardrails once; the agent researches, plans, and runs the production workflow.
-- **Closed-loop channel learning:** real 24-hour and 7-day analytics become evidence-backed recommendations that influence future plans only after you approve them.
-- **Production Readiness Gate:** verify text, narration, FFmpeg, YouTube access, and upload metadata before autonomous production or publishing begins.
-- **Safer packaging experiments:** review and select title and thumbnail variants without silently changing live YouTube metadata.
+- **Resumable generation:** strategy, script, thumbnail, SEO, production, and quality-review stages persist as checkpoints and resume from the first unfinished stage.
+- **Selective retry controls:** choose exactly which stage to regenerate while reusing earlier verified artifacts and tracking saved stages in the dashboard.
+- **Operator-run recovery:** interrupted autonomous runs continue from their saved research, editorial plan, ideas, and generation jobs.
+- **Duplicate-upload protection:** YouTube video IDs are persisted immediately; known uploads are reconciled, while uncertain outcomes stop for manual verification instead of uploading twice.
+- **Bounded transient retries:** retry-safe provider and network failures receive one backoff retry without weakening approval, rights, readiness, or publishing gates.
 
 See the complete release history in [CHANGELOG.md](CHANGELOG.md).
 
@@ -48,6 +49,12 @@ Before activating autonomous production, open **Production readiness** in the da
 AI image generation can incur a larger provider charge, so its live probe is a separate opt-in checkbox. Without that checkbox, image configuration is reported as verified, skipped, or using the built-in gradient fallback without making a paid image request.
 
 Results persist locally in SQLite with exact remediation steps. A recorded blocking failure stops autonomous generation and publishing until a later run passes; manual work remains available when readiness has never been checked or the last result is older than 24 hours.
+
+### Resume an interrupted production
+
+Every generation stage writes a local SQLite checkpoint. If a provider times out or the application restarts, the dashboard shows the saved-stage count and the first incomplete stage. Choose **Resume** to continue from there, or select an earlier stage when you intentionally want to regenerate that stage and everything after it. Saved files are validated before reuse; missing artifacts are regenerated automatically.
+
+Autonomous Operator runs preserve their research and editorial plan, so **Resume run** continues unfinished plan items instead of researching and generating completed videos again. Publishing remains fail-closed: if an upload may have reached YouTube but no video ID was returned, Lumen requires channel reconciliation before another upload attempt.
 
 ### What you need
 
@@ -211,6 +218,11 @@ TARGET_AUDIENCE=Your target audience
 YOUTUBE_REGION=US
 DEFAULT_PRIVACY_STATUS=private
 
+# Optional recovery tuning (defaults shown)
+MAX_CONCURRENT_JOBS=1
+GENERATION_STAGE_MAX_ATTEMPTS=2
+GENERATION_RETRY_BASE_MS=1000
+
 # Optional: protect mutating API routes (POST /generate, /publish)
 # API_KEY=some-long-random-string
 
@@ -265,6 +277,18 @@ curl -X POST http://localhost:3456/generate \
 # inspect the returned background job
 curl http://localhost:3456/api/jobs/:jobId
 
+# resume a failed/interrupted job from its first incomplete checkpoint
+curl -X POST http://localhost:3456/api/jobs/:jobId/resume \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $API_KEY" \
+  -d '{}'
+
+# intentionally regenerate a selected stage and everything after it
+curl -X POST http://localhost:3456/api/jobs/:jobId/resume \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $API_KEY" \
+  -d '{"stage":"thumbnail"}'
+
 # inspect the latest production-readiness evidence
 curl http://localhost:3456/api/readiness
 
@@ -285,6 +309,10 @@ curl -X POST http://localhost:3456/api/operator/start \
   -H "Content-Type: application/json" \
   -H "x-api-key: $API_KEY" \
   -d '{}'
+
+# resume an interrupted operator run from its saved plan
+curl -X POST http://localhost:3456/api/operator/runs/:runId/resume \
+  -H "x-api-key: $API_KEY"
 
 # view schedule
 curl http://localhost:3456/schedule

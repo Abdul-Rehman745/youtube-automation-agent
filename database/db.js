@@ -234,6 +234,19 @@ class Database {
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
         completed_at TEXT
       )`,
+      `CREATE TABLE IF NOT EXISTS generation_checkpoints (
+        job_id TEXT NOT NULL,
+        stage TEXT NOT NULL,
+        status TEXT DEFAULT 'pending',
+        artifact TEXT,
+        attempt_count INTEGER DEFAULT 0,
+        error TEXT,
+        started_at TEXT,
+        completed_at TEXT,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (job_id, stage),
+        FOREIGN KEY (job_id) REFERENCES generation_jobs(id)
+      )`,
       `CREATE TABLE IF NOT EXISTS production_snapshots (
         production_id TEXT PRIMARY KEY,
         strategy TEXT,
@@ -626,11 +639,16 @@ class Database {
 
   async createGenerationJob(input = {}) {
     const id = this.generateId('job');
+    const details = {
+      strategyContext: input.strategyContext || {},
+      resumeCount: 0,
+      reusedStages: []
+    };
     await this.executeQuery(
       `INSERT INTO generation_jobs (
         id, topic, style, length, source, status, stage, progress, details
       ) VALUES (?, ?, ?, ?, ?, 'queued', 'queued', 0, ?)`,
-      [id, input.topic || null, input.style || null, input.length || 'medium', input.source || 'manual', '{}']
+      [id, input.topic || null, input.style || null, input.length || 'medium', input.source || 'manual', JSON.stringify(details)]
     );
     return this.getGenerationJob(id);
   }
@@ -666,12 +684,70 @@ class Database {
 
   async listGenerationJobs(limit = 30) {
     const rows = await this.getAllRows('SELECT * FROM generation_jobs ORDER BY created_at DESC LIMIT ?', [limit]);
-    return rows.map(row => ({ ...row, details: JSON.parse(row.details || '{}'), cancelRequested: Boolean(row.cancel_requested) }));
+    return Promise.all(rows.map(async row => {
+      const job = { ...row, details: JSON.parse(row.details || '{}'), cancelRequested: Boolean(row.cancel_requested) };
+      job.checkpoints = await this.listGenerationCheckpoints(job.id);
+      return job;
+    }));
+  }
+
+  async saveGenerationCheckpoint(jobId, stage, changes = {}) {
+    const current = await this.getGenerationCheckpoint(jobId, stage);
+    const artifact = changes.artifact === undefined ? current?.artifact : changes.artifact;
+    const attemptCount = changes.incrementAttempt
+      ? Number(current?.attempt_count || 0) + 1
+      : changes.attemptCount ?? current?.attempt_count ?? 0;
+    await this.executeQuery(
+      `INSERT INTO generation_checkpoints (
+        job_id, stage, status, artifact, attempt_count, error, started_at, completed_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(job_id, stage) DO UPDATE SET
+        status = excluded.status, artifact = excluded.artifact,
+        attempt_count = excluded.attempt_count, error = excluded.error,
+        started_at = excluded.started_at, completed_at = excluded.completed_at,
+        updated_at = datetime('now')`,
+      [
+        jobId,
+        stage,
+        changes.status ?? current?.status ?? 'pending',
+        artifact === undefined ? null : JSON.stringify(artifact),
+        attemptCount,
+        changes.error === undefined ? current?.error ?? null : changes.error,
+        changes.startedAt === undefined ? current?.started_at ?? null : changes.startedAt,
+        changes.completedAt === undefined ? current?.completed_at ?? null : changes.completedAt
+      ]
+    );
+    return this.getGenerationCheckpoint(jobId, stage);
+  }
+
+  async getGenerationCheckpoint(jobId, stage) {
+    const row = await this.getRow(
+      'SELECT * FROM generation_checkpoints WHERE job_id = ? AND stage = ?',
+      [jobId, stage]
+    );
+    return row ? { ...row, artifact: JSON.parse(row.artifact || 'null') } : null;
+  }
+
+  async listGenerationCheckpoints(jobId) {
+    const rows = await this.getAllRows(
+      'SELECT * FROM generation_checkpoints WHERE job_id = ? ORDER BY updated_at, stage',
+      [jobId]
+    );
+    return rows.map(row => ({ ...row, artifact: JSON.parse(row.artifact || 'null') }));
+  }
+
+  async deleteGenerationCheckpoints(jobId, stages = []) {
+    if (!stages.length) return;
+    const placeholders = stages.map(() => '?').join(', ');
+    await this.executeQuery(
+      `DELETE FROM generation_checkpoints WHERE job_id = ? AND stage IN (${placeholders})`,
+      [jobId, ...stages]
+    );
   }
 
   async markInterruptedJobs() {
     await this.executeQuery(
-      `UPDATE generation_jobs SET status = 'interrupted', stage = 'interrupted',
+      `UPDATE generation_jobs SET status = 'interrupted',
        error = 'The application restarted before this job finished', updated_at = datetime('now'),
        completed_at = datetime('now') WHERE status IN ('queued', 'running')`
     );
@@ -897,6 +973,8 @@ class Database {
 
   // Publishing methods
   async saveScheduleEntry(entry) {
+    const existing = await this.getLatestScheduleEntry(entry.productionId);
+    if (existing) return existing;
     const id = this.generateId('schedule');
     entry.id = id;
     
@@ -941,14 +1019,16 @@ class Database {
     );
   }
 
-  async getPublishQueue() {
-    const rows = await this.getAllRows(
-      `SELECT * FROM publish_schedule 
-       WHERE status IN ('scheduled', 'paused') 
-       ORDER BY publish_time ASC`
+  async getLatestScheduleEntry(productionId) {
+    const row = await this.getRow(
+      'SELECT * FROM publish_schedule WHERE production_id = ? ORDER BY created_at DESC LIMIT 1',
+      [productionId]
     );
-    
-    return rows.map(row => ({
+    return row ? this.deserializeScheduleEntry(row) : null;
+  }
+
+  deserializeScheduleEntry(row) {
+    return {
       ...row,
       productionId: row.production_id,
       publishTime: row.publish_time,
@@ -957,7 +1037,17 @@ class Database {
       publishedAt: row.published_at,
       error: row.error_message,
       metadata: JSON.parse(row.metadata || '{}')
-    }));
+    };
+  }
+
+  async getPublishQueue() {
+    const rows = await this.getAllRows(
+      `SELECT * FROM publish_schedule
+       WHERE status IN ('scheduled', 'paused')
+       ORDER BY publish_time ASC`
+    );
+
+    return rows.map(row => this.deserializeScheduleEntry(row));
   }
 
   async getUpcomingSchedule(days = 7) {
@@ -971,16 +1061,7 @@ class Database {
       [endDate.toISOString()]
     );
     
-    return rows.map(row => ({
-      ...row,
-      productionId: row.production_id,
-      publishTime: row.publish_time,
-      youtubeId: row.youtube_id,
-      youtubeUrl: row.youtube_url,
-      publishedAt: row.published_at,
-      error: row.error_message,
-      metadata: JSON.parse(row.metadata || '{}')
-    }));
+    return rows.map(row => this.deserializeScheduleEntry(row));
   }
 
   // Analytics methods
