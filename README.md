@@ -8,15 +8,15 @@ Research topics → write scripts → generate narration and visuals → assembl
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js 18+](https://img.shields.io/badge/node-18%2B-43853d.svg)](package.json)
 
-## What's new in version 2.8.0
+## What's new on master
 
-Version 2.8 adds an evidence-first Research & Provenance Desk to every production:
+The latest build expands AgentTube from evidence-first long-form production into a repairable, provider-flexible, multi-format channel workflow:
 
-- **Source-aware research:** YouTube trend and competitor signals retain their exact video URLs, titles, publishers, and publication dates through autonomous planning.
-- **Claim ledger:** AI scripts declare externally verifiable claims and connect them only to sources supplied by the research stage.
-- **Evidence review:** Review Studio lets an operator add and verify sources, mark claims supported, unsupported, or explicitly waived, and record reviewer notes.
-- **Fail-closed approval:** unresolved claims block approval; a supported claim must link to at least one reviewer-verified source, and a waiver requires a note.
-- **Disclosure handoff:** realistic altered or synthetic media can be declared in Review Studio and is passed to YouTube's upload metadata.
+- **Shorts Repurposing Studio:** turn an approved production into three source-scene-backed 9:16 drafts, choose blurred, cropped, or stacked layouts, render mobile captions locally, and approve each Short on its own schedule.
+- **Scene-level repair:** edit, reorder, lock, replace, or regenerate one scene, then rebuild the final MP4 without discarding the rest of the production.
+- **Narration reliability:** missing, stale, simulated, or failed TTS now blocks assembly, approval, scheduling, and publishing; narration-only recovery and reasoned intentional silence are explicit operator actions.
+- **Multi-provider AI video:** route bounded clips across Seedance, MiniMax H3, Gemini Omni Flash, Kling, and Wan with durable external task IDs, paid-seconds caps, hybrid local assembly, and slideshow fallback.
+- **Research and provenance:** retain exact sources, connect factual claims to reviewer-verified evidence, and carry realistic synthetic-media disclosure into YouTube metadata.
 
 See the complete release history in [CHANGELOG.md](CHANGELOG.md).
 
