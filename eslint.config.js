@@ -42,7 +42,13 @@ module.exports = [
         setTimeout: 'readonly',
         URL: 'readonly',
         window: 'readonly',
-        document: 'readonly'
+        document: 'readonly',
+        matchMedia: 'readonly',
+        performance: 'readonly',
+        requestAnimationFrame: 'readonly',
+        cancelAnimationFrame: 'readonly',
+        IntersectionObserver: 'readonly',
+        PointerEvent: 'readonly'
       }
     },
     rules: {
