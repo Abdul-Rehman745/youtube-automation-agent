@@ -1,4 +1,4 @@
-# YouTube Automation Agent - ECGHuNZSECqTXabaLjkVrTEnguiNZLkKF1qi8oBGpump
+# AgentTube - ECGHuNZSECqTXabaLjkVrTEnguiNZLkKF1qi8oBGpump
 
 **The open-source AI agent that runs a YouTube channel end to end.**
 
