@@ -77,6 +77,10 @@ function buildInitialSceneManifest(production = {}, providerResult = {}) {
   const totalWords = wordCounts.reduce((sum, count) => sum + count, 0);
   const generated = providerResult.scenes || [];
   const visualAssets = (production.assets?.video?.visualAssets || []).filter(Boolean);
+  const audio = production.assets?.audio || {};
+  const narrationStatus = audio.intentionalSilence === true
+    ? 'intentional_silence'
+    : audio.simulated || audio.status === 'unavailable' ? 'unavailable' : 'current';
 
   return blueprints.map((scene, position) => {
     const generatedScene = generated.find(item => String(item.label || '').toLowerCase() === scene.label.toLowerCase()) || generated[position];
@@ -93,11 +97,17 @@ function buildInitialSceneManifest(production = {}, providerResult = {}) {
       assetOrigin: 'generated',
       assetPath,
       audioPath: null,
+      narrationProvider: audio.provider || null,
+      narrationModel: audio.model || null,
+      narrationTaskId: audio.externalTaskId || null,
+      narrationError: audio.error || null,
+      narrationGeneratedAt: audio.generatedAt || null,
+      narrationCost: audio.cost || {},
       provider,
       model: generatedScene?.model || providerResult.model || null,
       externalTaskId: generatedScene?.taskId || null,
       status: assetPath ? 'ready' : 'missing_asset',
-      narrationStatus: production.assets?.audio?.simulated ? 'unavailable' : 'current',
+      narrationStatus,
       revision: 1,
       locked: false,
       rightsConfirmed: true,
@@ -135,7 +145,14 @@ class SceneRepairService {
 
   async initializeAudioSegments(production, scenes) {
     const audioPath = production.assets?.audio?.path;
-    if (!await this.videoGenerator?.isUsableAudioFile?.(audioPath)) return scenes;
+    const audio = production.assets?.audio || {};
+    if (!await this.videoGenerator?.isUsableAudioFile?.(audioPath)) {
+      for (const scene of scenes) {
+        scene.narrationStatus = audio.intentionalSilence === true ? 'intentional_silence' : 'unavailable';
+        scene.narrationError = audio.intentionalSilence === true ? null : audio.error || 'Narration audio is unavailable';
+      }
+      return scenes;
+    }
     const directory = path.join(this.dataRoot, 'audio', 'scenes', production.id);
     await fs.mkdir(directory, { recursive: true });
     let start = 0;
@@ -144,9 +161,18 @@ class SceneRepairService {
       try {
         await runFFmpeg(['-y', '-ss', start.toFixed(2), '-t', Number(scene.duration).toFixed(2), '-i', audioPath, '-vn', '-c:a', 'libmp3lame', output]);
         scene.audioPath = output;
+        scene.narrationStatus = 'current';
+        scene.narrationProvider = audio.provider || null;
+        scene.narrationModel = audio.model || null;
+        scene.narrationTaskId = audio.externalTaskId || null;
+        scene.narrationError = null;
+        scene.narrationGeneratedAt = audio.generatedAt || null;
+        scene.narrationCost = audio.cost || {};
       } catch (error) {
         this.logger.warn(`Could not split narration for scene ${scene.position + 1}: ${error.message}`);
         scene.audioPath = null;
+        scene.narrationStatus = 'unavailable';
+        scene.narrationError = `Narration segment could not be prepared: ${error.message}`;
       }
       start += Number(scene.duration);
     }
@@ -231,6 +257,125 @@ class SceneRepairService {
     return after;
   }
 
+  async regenerateNarration(productionId, sceneId, input = {}) {
+    const bundle = await this.getEditableBundle(productionId);
+    const scene = bundle.scenes.find(item => item.id === sceneId);
+    if (!scene) throw this.error('Scene not found', 404);
+    if (scene.locked) throw this.error('Unlock this scene before regenerating narration', 409);
+    if (input.confirmCost !== true) {
+      throw this.error('Confirm that narration regeneration may consume provider credits', 409, 'NARRATION_COST_CONFIRMATION_REQUIRED');
+    }
+
+    const before = scene;
+    const outputPath = path.join(this.dataRoot, 'audio', 'scenes', productionId, `${String(scene.position).padStart(3, '0')}_r${scene.revision + 1}.mp3`);
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    try {
+      await this.db.updateProductionScene(productionId, sceneId, {
+        narrationStatus: 'generating', narrationError: null
+      });
+      const generatedPath = await this.videoGenerator.generateTTSAudio(scene.scriptText, outputPath);
+      const evidence = this.videoGenerator.lastNarrationResult || {};
+      if (!await this.videoGenerator.isUsableAudioFile(generatedPath)) {
+        throw this.error('Narration regeneration returned no usable audio; configure a live TTS provider and retry', 422, 'NARRATION_UNAVAILABLE');
+      }
+      const cost = evidence.cost || {
+        provider: evidence.provider || 'configured-tts', amount: null, currency: null, invoiceRequired: true
+      };
+      const next = await this.db.updateProductionScene(productionId, sceneId, {
+        audioPath: generatedPath,
+        narrationStatus: 'current',
+        narrationProvider: evidence.provider || 'configured-tts',
+        narrationModel: evidence.model || null,
+        narrationTaskId: evidence.externalTaskId || null,
+        narrationError: null,
+        narrationGeneratedAt: evidence.generatedAt || new Date().toISOString(),
+        narrationCost: cost,
+        status: scene.status === 'visual_stale' ? 'visual_stale' : 'needs_rebuild',
+        revision: scene.revision + 1
+      });
+      await this.updateProductionAudioState(bundle, {
+        status: 'partial', path: null, simulated: false, intentionalSilence: false,
+        error: 'Scene narration changed; rebuild the final narration mix before approval'
+      });
+      await this.db.saveProductionSceneRevision({
+        productionId, sceneId, action: 'regenerate_narration', before, after: next, costEvidence: cost
+      });
+      return next;
+    } catch (error) {
+      const evidence = this.videoGenerator.lastNarrationResult || {};
+      await this.db.updateProductionScene(productionId, sceneId, {
+        narrationStatus: 'failed', narrationProvider: evidence.provider || scene.narrationProvider,
+        narrationModel: evidence.model || scene.narrationModel, narrationTaskId: evidence.externalTaskId || null,
+        narrationError: error.message, narrationGeneratedAt: evidence.generatedAt || new Date().toISOString(),
+        narrationCost: evidence.cost || scene.narrationCost || {}
+      }).catch(() => {});
+      await this.db.saveProductionSceneRevision({
+        productionId, sceneId, action: 'regenerate_narration', status: 'failed', before, after: {},
+        costEvidence: evidence.cost || {}, error: error.message
+      }).catch(() => {});
+      throw error;
+    }
+  }
+
+  async setSilenceOverride(productionId, input = {}) {
+    const bundle = await this.getEditableBundle(productionId);
+    const enabled = input.enabled === true;
+    const reason = String(input.reason || '').trim();
+    if (enabled && input.confirmed !== true) {
+      throw this.error('Confirm the intentional-silence override before applying it', 409, 'SILENCE_CONFIRMATION_REQUIRED');
+    }
+    if (enabled && reason.length < 10) {
+      throw this.error('Explain why this production is intentionally silent using at least 10 characters', 400);
+    }
+    const changedAt = new Date().toISOString();
+    const audioChanges = enabled
+      ? {
+          path: null, status: 'intentional_silence', simulated: false, intentionalSilence: true,
+          silenceReason: reason, silenceConfirmedAt: changedAt, provider: 'operator-override', model: null,
+          externalTaskId: null, generatedAt: changedAt, cost: { billed: false }, error: null
+        }
+      : {
+          path: null, status: 'unavailable', simulated: true, intentionalSilence: false,
+          silenceReason: null, silenceConfirmedAt: null, provider: null, model: null,
+          externalTaskId: null, generatedAt: changedAt, cost: { billed: false },
+          error: 'Narration is required; regenerate every missing scene before approval'
+        };
+    await this.updateProductionAudioState(bundle, audioChanges);
+    const updated = [];
+    for (const scene of bundle.scenes) {
+      const before = scene;
+      const hasAudio = !enabled && scene.audioPath && await this.pathExists(scene.audioPath);
+      const next = await this.db.updateProductionScene(productionId, scene.id, {
+        audioPath: enabled ? null : scene.audioPath,
+        narrationStatus: enabled ? 'intentional_silence' : hasAudio ? 'current' : 'unavailable',
+        narrationProvider: enabled ? 'operator-override' : scene.narrationProvider,
+        narrationModel: enabled ? null : scene.narrationModel,
+        narrationTaskId: enabled ? null : scene.narrationTaskId,
+        narrationError: enabled || hasAudio ? null : 'Narration is required for this scene',
+        narrationGeneratedAt: changedAt,
+        narrationCost: enabled ? { billed: false } : scene.narrationCost,
+        status: scene.status === 'visual_stale' ? 'visual_stale' : 'needs_rebuild',
+        revision: scene.revision + 1
+      });
+      await this.db.saveProductionSceneRevision({
+        productionId, sceneId: scene.id, action: enabled ? 'confirm_intentional_silence' : 'require_narration',
+        before, after: next, costEvidence: { billed: false }
+      });
+      updated.push(next);
+    }
+    return { enabled, reason: enabled ? reason : null, scenes: updated };
+  }
+
+  async updateProductionAudioState(bundle, changes) {
+    const assets = { ...bundle.assets, audio: { ...(bundle.assets?.audio || {}), ...changes } };
+    await this.db.updateProductionData({
+      id: bundle.id, status: bundle.status, assets, timeline: bundle.timeline,
+      scheduledPublishTime: bundle.scheduled_publish_time, priority: bundle.priority
+    });
+    bundle.assets = assets;
+    return assets.audio;
+  }
+
   async regenerationEstimate(productionId, sceneId, input = {}) {
     const bundle = await this.getEditableBundle(productionId);
     const scene = bundle.scenes.find(item => item.id === sceneId);
@@ -294,7 +439,13 @@ class SceneRepairService {
         if (!await this.videoGenerator.isUsableAudioFile(generatedPath)) {
           throw this.error('Narration regeneration returned a simulation; configure a live TTS provider before rebuilding edited narration', 422, 'NARRATION_UNAVAILABLE');
         }
-        narration = { audioPath: generatedPath, narrationStatus: 'current' };
+        const evidence = this.videoGenerator.lastNarrationResult || {};
+        narration = {
+          audioPath: generatedPath, narrationStatus: 'current',
+          narrationProvider: evidence.provider || 'configured-tts', narrationModel: evidence.model || null,
+          narrationTaskId: evidence.externalTaskId || null, narrationError: null,
+          narrationGeneratedAt: evidence.generatedAt || new Date().toISOString(), narrationCost: evidence.cost || {}
+        };
       }
 
       const next = await this.db.updateProductionScene(productionId, sceneId, {
@@ -366,12 +517,22 @@ class SceneRepairService {
     const scenes = await this.db.listProductionScenes(productionId);
     if (!scenes.length) throw this.error('No scene manifest is available', 409);
     const missing = [];
+    const fullNarrationReady = await this.videoGenerator.isUsableAudioFile(bundle.assets?.audio?.path);
+    const currentSceneAudio = [];
     for (const scene of scenes) {
-      if (scene.narrationStatus === 'stale') missing.push(`${scene.label}: narration is stale`);
+      if (!['current', 'intentional_silence'].includes(scene.narrationStatus)) {
+        missing.push(`${scene.label}: narration is ${String(scene.narrationStatus || 'unavailable').replaceAll('_', ' ')}`);
+      }
+      if (scene.narrationStatus === 'current') currentSceneAudio.push(Boolean(scene.audioPath && await this.pathExists(scene.audioPath)));
       if (scene.status === 'visual_stale') missing.push(`${scene.label}: visual prompt changed but the asset was not regenerated or replaced`);
       if (['failed', 'generating', 'missing_asset'].includes(scene.status)) missing.push(`${scene.label}: scene status is ${scene.status.replaceAll('_', ' ')}`);
       if (!scene.assetPath || !await this.pathExists(scene.assetPath)) missing.push(`${scene.label}: visual asset is missing`);
       if (scene.assetOrigin === 'uploaded' && !scene.rightsConfirmed) missing.push(`${scene.label}: media rights are not confirmed`);
+    }
+    if (currentSceneAudio.some(Boolean) && currentSceneAudio.some(value => !value)) {
+      missing.push('The scene narration mix is incomplete; regenerate every missing narration segment');
+    } else if (currentSceneAudio.length && currentSceneAudio.every(value => !value) && !fullNarrationReady) {
+      missing.push('No usable production or scene narration audio is available');
     }
     if (missing.length) throw this.error(`Cannot rebuild: ${missing.join('; ')}`, 409, 'SCENE_REBUILD_BLOCKED', { blockers: missing });
 
@@ -386,7 +547,8 @@ class SceneRepairService {
     })), visualPath);
 
     const audioPath = await this.rebuildNarration(productionId, scenes, bundle.assets?.audio?.path, timestamp);
-    await this.videoGenerator.addAudioToVideo(visualPath, audioPath, finalPath);
+    const allIntentionalSilence = scenes.every(scene => scene.narrationStatus === 'intentional_silence');
+    await this.videoGenerator.addAudioToVideo(visualPath, audioPath, finalPath, { allowSilent: allIntentionalSilence });
     await fs.unlink(visualPath).catch(() => {});
     await fs.writeFile(captionsPath, this.buildSRT(scenes));
     const stats = await fs.stat(finalPath);
@@ -394,7 +556,19 @@ class SceneRepairService {
     const containsSyntheticMedia = scenes.some(scene => scene.containsSyntheticMedia);
     const assets = {
       ...bundle.assets,
-      audio: audioPath ? { ...(bundle.assets?.audio || {}), path: audioPath, sceneMixed: scenes.every(scene => scene.audioPath) } : bundle.assets?.audio,
+      audio: {
+        ...(bundle.assets?.audio || {}), path: audioPath, simulated: false,
+        status: allIntentionalSilence ? 'intentional_silence' : 'ready',
+        intentionalSilence: allIntentionalSilence,
+        provider: allIntentionalSilence ? 'operator-override' : 'scene-mix',
+        model: allIntentionalSilence ? null : 'ffmpeg-concat',
+        generatedAt: new Date().toISOString(), error: null,
+        sceneMixed: scenes.some(scene => scene.audioPath) || scenes.some(scene => scene.narrationStatus === 'intentional_silence'),
+        sceneEvidence: scenes.map(scene => ({
+          sceneId: scene.id, status: scene.narrationStatus, provider: scene.narrationProvider,
+          model: scene.narrationModel, externalTaskId: scene.narrationTaskId, generatedAt: scene.narrationGeneratedAt
+        }))
+      },
       captions: { path: captionsPath, format: 'srt', language: 'en', autoGenerated: true, sceneAware: true },
       finalVideo: {
         ...(bundle.assets?.finalVideo || {}), path: finalPath, previousPath, fileSize: stats.size,
@@ -421,15 +595,18 @@ class SceneRepairService {
   }
 
   async rebuildNarration(productionId, scenes, fallbackAudioPath, timestamp) {
-    if (!scenes.every(scene => scene.audioPath && scene.narrationStatus === 'current')) {
-      return fallbackAudioPath;
-    }
-    const usable = [];
-    for (const scene of scenes) usable.push(await this.pathExists(scene.audioPath));
-    if (usable.some(value => !value)) return fallbackAudioPath;
+    const hasSceneAudio = scenes.some(scene => scene.audioPath && scene.narrationStatus === 'current');
+    const allCurrentWithoutSegments = scenes.every(scene => scene.narrationStatus === 'current' && !scene.audioPath);
+    if (!hasSceneAudio && allCurrentWithoutSegments) return fallbackAudioPath;
     const outputPath = path.join(this.dataRoot, 'audio', `${productionId}_scene_mix_${timestamp}.m4a`);
     const args = ['-y'];
-    for (const scene of scenes) args.push('-i', scene.audioPath);
+    for (const scene of scenes) {
+      if (scene.narrationStatus === 'intentional_silence') {
+        args.push('-f', 'lavfi', '-t', Number(scene.duration).toFixed(2), '-i', 'anullsrc=r=48000:cl=mono');
+      } else {
+        args.push('-i', scene.audioPath);
+      }
+    }
     const filters = scenes.map((scene, index) => `[${index}:a]aresample=48000,apad,atrim=duration=${Number(scene.duration).toFixed(2)},asetpts=PTS-STARTPTS[a${index}]`);
     filters.push(`${scenes.map((_, index) => `[a${index}]`).join('')}concat=n=${scenes.length}:v=0:a=1[aout]`);
     args.push('-filter_complex', filters.join(';'), '-map', '[aout]', '-c:a', 'aac', outputPath);

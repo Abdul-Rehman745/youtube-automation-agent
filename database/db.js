@@ -310,6 +310,12 @@ class Database {
         asset_origin TEXT DEFAULT 'generated',
         asset_path TEXT,
         audio_path TEXT,
+        narration_provider TEXT,
+        narration_model TEXT,
+        narration_task_id TEXT,
+        narration_error TEXT,
+        narration_generated_at TEXT,
+        narration_cost TEXT NOT NULL DEFAULT '{}',
         provider TEXT,
         model TEXT,
         external_task_id TEXT,
@@ -432,8 +438,28 @@ class Database {
       await this.executeQuery(tableQuery);
     }
 
+    await this.ensureColumns('production_scenes', {
+      narration_provider: 'TEXT',
+      narration_model: 'TEXT',
+      narration_task_id: 'TEXT',
+      narration_error: 'TEXT',
+      narration_generated_at: 'TEXT',
+      narration_cost: "TEXT NOT NULL DEFAULT '{}'"
+    });
+
     // Insert default settings
     await this.insertDefaultSettings();
+  }
+
+  async ensureColumns(tableName, columns) {
+    const allowedTables = new Set(['production_scenes']);
+    if (!allowedTables.has(tableName)) throw new Error(`Unsupported migration table: ${tableName}`);
+    const existing = new Set((await this.getAllRows(`PRAGMA table_info(${tableName})`)).map(column => column.name));
+    for (const [columnName, definition] of Object.entries(columns)) {
+      if (!existing.has(columnName)) {
+        await this.executeQuery(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+      }
+    }
   }
 
   async insertDefaultSettings() {
@@ -898,15 +924,19 @@ class Database {
       await this.executeQuery(
         `INSERT INTO production_scenes (
           id, production_id, position, label, script_text, prompt, duration,
-          asset_type, asset_origin, asset_path, audio_path, provider, model,
+          asset_type, asset_origin, asset_path, audio_path,
+          narration_provider, narration_model, narration_task_id, narration_error,
+          narration_generated_at, narration_cost, provider, model,
           external_task_id, status, narration_status, revision, locked,
           rights_confirmed, provenance_source_ids, contains_synthetic_media,
           estimated_cost, actual_cost
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id, productionId, position, scene.label, scene.scriptText || '', scene.prompt || '', scene.duration,
           scene.assetType || 'missing', scene.assetOrigin || 'generated', scene.assetPath || null,
-          scene.audioPath || null, scene.provider || null, scene.model || null, scene.externalTaskId || null,
+          scene.audioPath || null, scene.narrationProvider || null, scene.narrationModel || null,
+          scene.narrationTaskId || null, scene.narrationError || null, scene.narrationGeneratedAt || null,
+          JSON.stringify(scene.narrationCost || {}), scene.provider || null, scene.model || null, scene.externalTaskId || null,
           scene.status || 'ready', scene.narrationStatus || 'current', scene.revision || 1,
           scene.locked ? 1 : 0, scene.rightsConfirmed ? 1 : 0,
           JSON.stringify(scene.provenanceSourceIds || []), scene.containsSyntheticMedia ? 1 : 0,
@@ -939,7 +969,9 @@ class Database {
     await this.executeQuery(
       `UPDATE production_scenes SET
         position = ?, label = ?, script_text = ?, prompt = ?, duration = ?,
-        asset_type = ?, asset_origin = ?, asset_path = ?, audio_path = ?, provider = ?,
+        asset_type = ?, asset_origin = ?, asset_path = ?, audio_path = ?,
+        narration_provider = ?, narration_model = ?, narration_task_id = ?, narration_error = ?,
+        narration_generated_at = ?, narration_cost = ?, provider = ?,
         model = ?, external_task_id = ?, status = ?, narration_status = ?, revision = ?,
         locked = ?, rights_confirmed = ?, provenance_source_ids = ?,
         contains_synthetic_media = ?, estimated_cost = ?, actual_cost = ?,
@@ -948,7 +980,9 @@ class Database {
       [
         next.position, next.label, next.scriptText || '', next.prompt || '', next.duration,
         next.assetType || 'missing', next.assetOrigin || 'generated', next.assetPath || null,
-        next.audioPath || null, next.provider || null, next.model || null, next.externalTaskId || null,
+        next.audioPath || null, next.narrationProvider || null, next.narrationModel || null,
+        next.narrationTaskId || null, next.narrationError || null, next.narrationGeneratedAt || null,
+        JSON.stringify(next.narrationCost || {}), next.provider || null, next.model || null, next.externalTaskId || null,
         next.status || 'ready', next.narrationStatus || 'current', next.revision || 1,
         next.locked ? 1 : 0, next.rightsConfirmed ? 1 : 0,
         JSON.stringify(next.provenanceSourceIds || []), next.containsSyntheticMedia ? 1 : 0,
@@ -1018,6 +1052,12 @@ class Database {
       assetOrigin: row.asset_origin || 'generated',
       assetPath: row.asset_path || null,
       audioPath: row.audio_path || null,
+      narrationProvider: row.narration_provider || null,
+      narrationModel: row.narration_model || null,
+      narrationTaskId: row.narration_task_id || null,
+      narrationError: row.narration_error || null,
+      narrationGeneratedAt: row.narration_generated_at || null,
+      narrationCost: JSON.parse(row.narration_cost || '{}'),
       externalTaskId: row.external_task_id || null,
       narrationStatus: row.narration_status || 'current',
       revision: Number(row.revision || 1),

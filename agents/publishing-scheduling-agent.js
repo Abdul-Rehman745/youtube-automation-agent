@@ -49,6 +49,10 @@ class PublishingSchedulingAgent {
         this.logger.warn(`Not scheduling ${productionData.id}: no real video file was produced (placeholder/simulated output). Fix your AI provider keys and FFmpeg, then regenerate.`);
         return null;
       }
+      if (!await this.isNarrationReady(productionData.assets?.audio)) {
+        this.logger.warn(`Not scheduling ${productionData.id}: narration is missing. Regenerate narration or explicitly confirm an intentional silent video.`);
+        return null;
+      }
 
       this.logger.info(`Scheduling content: ${productionData.id}`);
       const existing = await this.db.getLatestScheduleEntry?.(productionData.id);
@@ -71,6 +75,7 @@ class PublishingSchedulingAgent {
           seo: productionData.seo,
           thumbnail: productionData.assets.thumbnail,
           video: productionData.assets.finalVideo,
+          audio: productionData.assets.audio,
           captions: productionData.assets.captions,
           privacyStatus: productionData.privacyStatus || process.env.DEFAULT_PRIVACY_STATUS || 'private',
           containsSyntheticMedia: productionData.containsSyntheticMedia === true
@@ -92,6 +97,7 @@ class PublishingSchedulingAgent {
 
   async publishContent(contentId) {
     try {
+      let productionBundle = null;
       if (this.db.getLatestReadinessRun) {
         const readiness = await this.db.getLatestReadinessRun();
         if (readiness?.status === 'failed') {
@@ -105,8 +111,8 @@ class PublishingSchedulingAgent {
         }
       }
       if (this.db.getProductionBundle) {
-        const bundle = await this.db.getProductionBundle(contentId);
-        if (bundle && !['verified', 'not_required'].includes(bundle.provenance?.status || 'not_required')) {
+        productionBundle = await this.db.getProductionBundle(contentId);
+        if (productionBundle && !['verified', 'not_required'].includes(productionBundle.provenance?.status || 'not_required')) {
           const error = new Error('Publishing is blocked until every factual claim is supported or explicitly waived');
           error.status = 409;
           error.code = 'PROVENANCE_BLOCKED';
@@ -126,6 +132,12 @@ class PublishingSchedulingAgent {
         throw new Error(`Content not found in queue: ${contentId}`);
       }
       if (scheduleEntry.status === 'published') return scheduleEntry;
+      if (!await this.isNarrationReady(scheduleEntry.metadata?.audio || productionBundle?.assets?.audio)) {
+        const error = new Error('Publishing is blocked because narration is missing or the intentional-silence override is incomplete');
+        error.status = 409;
+        error.code = 'NARRATION_REQUIRED';
+        throw error;
+      }
       if (scheduleEntry.youtubeId) {
         return this.reconcileUploadedVideo(scheduleEntry);
       }
@@ -233,6 +245,19 @@ class PublishingSchedulingAgent {
     }
     
     return videoUpload.data;
+  }
+
+  async isNarrationReady(audio = {}) {
+    if (audio.intentionalSilence === true) {
+      return String(audio.silenceReason || '').trim().length >= 10 && Boolean(audio.silenceConfirmedAt);
+    }
+    if (!audio.path || audio.simulated || String(audio.path).endsWith('.info')) return false;
+    try {
+      const stats = await fs.stat(audio.path);
+      return stats.isFile() && stats.size > 0;
+    } catch (_error) {
+      return false;
+    }
   }
 
   isUploadOutcomeUnknown(error) {

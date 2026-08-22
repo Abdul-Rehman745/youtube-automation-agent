@@ -545,10 +545,21 @@ function renderSceneEditor(item, canReview = true) {
   const scenes = item.scenes || [];
   if (!scenes.length) return '';
   const verifiedSources = (item.provenance?.sources || []).filter(source => source.status === 'verified');
+  const audio = item.assets?.audio || {};
+  const intentionalSilence = audio.intentionalSilence === true;
+  const narrationIssues = scenes.filter(scene => !['current', 'intentional_silence'].includes(scene.narrationStatus)).length;
   return `<section class="scene-repair-panel">
     <div class="panel-heading scene-heading">
       <div><p class="eyebrow">SCENE REPAIR STUDIO</p><h3>Repair the timeline, not the whole video</h3><p>Edit, replace, or regenerate one scene. Changes remain draft-only until the timeline is rebuilt and approved.</p></div>
       ${canReview ? `<button type="button" class="button primary small" data-rebuild-scenes="${escapeHTML(item.id)}">Rebuild final video</button>` : ''}
+    </div>
+    <div class="narration-recovery ${intentionalSilence ? 'intentional' : narrationIssues ? 'attention' : ''}">
+      <div><p class="eyebrow">NARRATION RELIABILITY</p><strong>${intentionalSilence ? 'Intentional silence confirmed' : narrationIssues ? `${narrationIssues} scene${narrationIssues === 1 ? '' : 's'} need narration` : 'Narration evidence is current'}</strong>
+      <p>${intentionalSilence ? escapeHTML(audio.silenceReason || '') : audio.error ? escapeHTML(audio.error) : 'Regenerate narration without replacing the scene visual. Approval remains blocked until audio is ready.'}</p>
+      ${audio.provider ? `<span class="narration-evidence">${escapeHTML(audio.provider)}${audio.model ? ` · ${escapeHTML(audio.model)}` : ''}${audio.externalTaskId ? ` · task ${escapeHTML(audio.externalTaskId)}` : ''}</span>` : ''}</div>
+      ${canReview ? intentionalSilence
+        ? '<button type="button" class="button secondary small" data-require-narration>Require narration</button>'
+        : '<button type="button" class="button secondary small" data-intentional-silence>Use intentional silence</button>' : ''}
     </div>
     <div class="scene-summary"><strong>${scenes.length} scenes</strong><span>${Math.round(scenes.reduce((sum, scene) => sum + Number(scene.duration || 0), 0))}s timeline</span><span>${scenes.filter(scene => scene.status !== 'ready').length} pending repairs</span></div>
     <div class="scene-list">
@@ -564,7 +575,7 @@ function renderSceneEditor(item, canReview = true) {
           <div class="scene-card-top">
             <div class="scene-preview">${preview}<span class="scene-number">${index + 1}</span></div>
             <div class="scene-identity">
-              <div class="scene-status-row">${statusChip(scene.status)} ${scene.narrationStatus === 'stale' ? statusChip('narration_stale') : ''}<span>r${scene.revision}</span></div>
+              <div class="scene-status-row">${statusChip(scene.status)} ${statusChip(`narration_${scene.narrationStatus || 'unavailable'}`)}<span>r${scene.revision}</span></div>
               <label><span>Scene label</span><input data-scene-field="label" maxlength="120" value="${escapeHTML(scene.label)}" ${disabled ? 'disabled' : ''}></label>
               <label><span>Duration</span><input data-scene-field="duration" type="number" min="2" max="600" step="0.5" value="${escapeHTML(scene.duration)}" ${disabled ? 'disabled' : ''}></label>
             </div>
@@ -574,12 +585,14 @@ function renderSceneEditor(item, canReview = true) {
           ${verifiedSources.length ? `<fieldset class="source-checklist scene-sources" ${disabled ? 'disabled' : ''}><legend>Verified evidence linked to this narration</legend>${verifiedSources.map(source => `<label><input type="checkbox" data-scene-source value="${escapeHTML(source.id)}" ${sourceIds.has(source.id) ? 'checked' : ''}> ${escapeHTML(source.title)}</label>`).join('')}</fieldset>` : ''}
           <div class="scene-options">
             <label class="toggle"><input type="checkbox" data-scene-factual checked ${disabled ? 'disabled' : ''}><span></span> Narration changes may contain factual claims</label>
-            <span>${escapeHTML(scene.provider || 'local')} ${scene.model ? `· ${escapeHTML(scene.model)}` : ''}</span>
+            <span>Visual: ${escapeHTML(scene.provider || 'local')} ${scene.model ? `· ${escapeHTML(scene.model)}` : ''}</span>
           </div>
+          <div class="scene-narration-evidence"><span>Narration: ${escapeHTML(scene.narrationProvider || 'not generated')}${scene.narrationModel ? ` · ${escapeHTML(scene.narrationModel)}` : ''}${scene.narrationTaskId ? ` · task ${escapeHTML(scene.narrationTaskId)}` : ''}</span>${scene.narrationError ? `<span class="danger-text">${escapeHTML(scene.narrationError)}</span>` : ''}</div>
           ${canReview ? `<div class="scene-actions">
             <button type="button" class="text-button" data-scene-move="up" ${disabled || index === 0 ? 'disabled' : ''}>↑ Earlier</button>
             <button type="button" class="text-button" data-scene-move="down" ${disabled || index === scenes.length - 1 ? 'disabled' : ''}>↓ Later</button>
             <button type="button" class="text-button approve" data-scene-save ${disabled ? 'disabled' : ''}>Save scene</button>
+            <button type="button" class="text-button" data-scene-narration ${disabled ? 'disabled' : ''}>Regenerate narration only</button>
             <button type="button" class="text-button" data-scene-regenerate ${disabled ? 'disabled' : ''}>Regenerate scene</button>
             <label class="text-button upload-button ${disabled ? 'disabled' : ''}">Replace asset<input type="file" data-scene-upload accept="image/png,image/jpeg,image/webp,video/mp4" ${disabled ? 'disabled' : ''}></label>
             <button type="button" class="text-button" data-scene-lock>${scene.locked ? 'Unlock' : 'Lock'}</button>
@@ -825,7 +838,7 @@ document.addEventListener('click', async event => {
     await mutate(`/api/learning/recommendations/${encodeURIComponent(id)}/${action}`, 'POST', {}, message).catch(() => {});
   }
 
-  const sceneButton = event.target.closest('[data-scene-save], [data-scene-regenerate], [data-scene-lock], [data-scene-move]');
+  const sceneButton = event.target.closest('[data-scene-save], [data-scene-narration], [data-scene-regenerate], [data-scene-lock], [data-scene-move]');
   if (sceneButton) {
     const card = sceneButton.closest('[data-scene-card]');
     const productionId = $('#content-review-form')?.dataset.productionId;
@@ -859,6 +872,14 @@ document.addEventListener('click', async event => {
         await refreshContentDialog(productionId, 'Scene draft saved.');
         return;
       }
+      if (sceneButton.matches('[data-scene-narration]')) {
+        if (!confirm('Regenerate narration for only this scene? This may consume TTS provider credits; the provider invoice is authoritative.')) return;
+        await api(`/api/content/${encodeURIComponent(productionId)}/scenes/${encodeURIComponent(sceneId)}/narration`, {
+          method: 'POST', body: JSON.stringify({ confirmCost: true })
+        });
+        await refreshContentDialog(productionId, 'Scene narration regenerated. Rebuild the final video when every narration segment is ready.');
+        return;
+      }
       const estimate = await api(`/api/content/${encodeURIComponent(productionId)}/scenes/${encodeURIComponent(sceneId)}/estimate`);
       const message = estimate.paid
         ? `Regenerate only this scene with ${estimate.provider} (${estimate.generatedSeconds}s). This consumes provider credits; the provider invoice is authoritative. Continue?`
@@ -868,6 +889,30 @@ document.addEventListener('click', async event => {
         method: 'POST', body: JSON.stringify({ confirmPaid: estimate.paid })
       });
       await refreshContentDialog(productionId, 'Scene regenerated. Rebuild the final video when the timeline is ready.');
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+    return;
+  }
+
+  const silenceAction = event.target.closest('[data-intentional-silence], [data-require-narration]');
+  if (silenceAction) {
+    const productionId = $('#content-review-form')?.dataset.productionId;
+    if (!productionId) return;
+    const enabled = silenceAction.matches('[data-intentional-silence]');
+    let reason = '';
+    if (enabled) {
+      reason = prompt('Why is this production intentionally silent? This reason is stored with the approval evidence.') || '';
+      if (!reason) return;
+      if (!confirm('Confirm that this production is intentionally silent. Captions and visuals will remain, and approval will record this override.')) return;
+    } else if (!confirm('Require narration again? Approval will be blocked until missing scene narration is regenerated and the video is rebuilt.')) {
+      return;
+    }
+    try {
+      await api(`/api/content/${encodeURIComponent(productionId)}/narration/silence`, {
+        method: 'POST', body: JSON.stringify({ enabled, confirmed: enabled, reason })
+      });
+      await refreshContentDialog(productionId, enabled ? 'Intentional silence recorded. Rebuild before approval.' : 'Narration is required again.');
     } catch (error) {
       showToast(error.message, 'error');
     }

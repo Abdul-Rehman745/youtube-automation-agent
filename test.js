@@ -28,6 +28,7 @@ class SystemTest {
       { name: 'Production Readiness Gate', test: () => this.testProductionReadinessGate() },
       { name: 'Durable Multi-Provider Video Generation', test: () => this.testVideoProviderLayer() },
       { name: 'Scene Repair Studio', test: () => this.testSceneRepairStudio() },
+      { name: 'Narration Reliability and Recovery', test: () => this.testNarrationReliability() },
       { name: 'Research and Provenance Desk', test: () => this.testProvenanceDesk() },
       { name: 'Resumable Generation Checkpoints', test: () => this.testResumableGenerationCheckpoints() },
       { name: 'API Validation and Security', test: () => this.testAPIValidationAndSecurity() },
@@ -817,8 +818,10 @@ class SystemTest {
     try {
       const imagePath = path.join(directory, 'scene.png');
       const oldVideoPath = path.join(directory, 'old.mp4');
+      const originalAudioPath = path.join(directory, 'original.mp3');
       await sharp({ create: { width: 320, height: 180, channels: 3, background: '#203a5f' } }).png().toFile(imagePath);
       await fs.writeFile(oldVideoPath, Buffer.from('previous final video'));
+      await fs.writeFile(originalAudioPath, Buffer.from('previous narration'));
       const production = {
         id: `prod_scene_${Date.now()}`,
         status: 'ready',
@@ -834,7 +837,7 @@ class SystemTest {
         strategy: { topic: 'Selective scene repair' },
         assets: {
           video: { visualAssets: [imagePath] },
-          audio: null,
+          audio: { path: originalAudioPath, status: 'ready', simulated: false, provider: 'fixture-tts', model: 'fixture-voice' },
           thumbnail: { path: imagePath },
           finalVideo: { path: oldVideoPath, simulated: false, duration: '1:00', provider: { actualProvider: 'slideshow' } }
         },
@@ -856,6 +859,12 @@ class SystemTest {
         throw new Error('Initial scene manifest did not preserve the script structure and visual assets');
       }
       await db.replaceProductionScenes(production.id, manifest);
+      for (const scene of await db.listProductionScenes(production.id)) {
+        await db.updateProductionScene(production.id, scene.id, {
+          audioPath: originalAudioPath, narrationStatus: 'current',
+          narrationProvider: 'fixture-tts', narrationModel: 'fixture-voice'
+        });
+      }
       const roundTrip = await db.listProductionScenes(production.id);
       if (roundTrip.length !== manifest.length || roundTrip[0].scriptText !== manifest[0].scriptText) {
         throw new Error('Scene manifest did not round-trip through SQLite');
@@ -877,12 +886,21 @@ class SystemTest {
           isValidVideo: async () => true
         },
         generateVisualAssets: async () => [imagePath],
-        generateTTSAudio: async (_text, outputPath) => { await fs.writeFile(outputPath, Buffer.from('scene narration')); return outputPath; },
+        async generateTTSAudio(_text, outputPath) {
+          await fs.writeFile(outputPath, Buffer.from('scene narration'));
+          this.lastNarrationResult = {
+            status: 'ready', path: outputPath, provider: 'fixture-tts', model: 'fixture-voice-v2',
+            externalTaskId: 'narration-task-1', generatedAt: new Date().toISOString(),
+            cost: { provider: 'fixture-tts', amount: null, invoiceRequired: true }
+          };
+          return outputPath;
+        },
         isUsableAudioFile: async filePath => Boolean(filePath && await fs.stat(filePath).then(stat => stat.size > 0).catch(() => false)),
         renderMediaTimeline: async (_segments, outputPath) => { await fs.writeFile(outputPath, Buffer.from('rebuilt visual timeline')); return outputPath; },
         addAudioToVideo: async (videoPath, _audioPath, outputPath) => { await fs.copyFile(videoPath, outputPath); return outputPath; }
       };
       const service = new SceneRepairService(db, fakeGenerator, { dataRoot: directory, logger: this.logger });
+      service.rebuildNarration = async () => originalAudioPath;
       const first = roundTrip[0];
       const edited = await service.updateScene(production.id, first.id, {
         scriptText: `${first.scriptText} Updated narration.`, prompt: `${first.prompt} Brighter composition.`, factualChange: false
@@ -905,7 +923,11 @@ class SystemTest {
       }
       if (!paidBlocked) throw new Error('Paid scene regeneration started without explicit confirmation');
       const regenerated = await service.regenerate(production.id, first.id, { confirmPaid: true, regenerateNarration: true });
-      if (regenerated.scene.status !== 'needs_rebuild' || regenerated.scene.externalTaskId !== 'scene-task-1' || regenerated.scene.narrationStatus !== 'current') {
+      if (
+        regenerated.scene.status !== 'needs_rebuild' || regenerated.scene.externalTaskId !== 'scene-task-1' ||
+        regenerated.scene.narrationStatus !== 'current' || regenerated.scene.narrationProvider !== 'fixture-tts' ||
+        regenerated.scene.narrationTaskId !== 'narration-task-1'
+      ) {
         throw new Error('Confirmed selective regeneration did not persist visual and narration evidence');
       }
 
@@ -952,6 +974,134 @@ class SystemTest {
     this.logger.info('Scene Repair Studio test completed successfully');
   }
 
+  async testNarrationReliability() {
+    const fs = require('fs').promises;
+    const os = require('os');
+    const { SceneRepairService } = require('./utils/scene-repair-service');
+    const { OperatorService } = require('./utils/operator-service');
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'yaa-narration-'));
+    const db = new Database();
+    db.dbPath = path.join(directory, 'narration.db');
+    await db.initialize();
+
+    try {
+      const productionId = 'prod-narration-recovery';
+      const visualPath = path.join(directory, 'scene.png');
+      const videoPath = path.join(directory, 'video.mp4');
+      await fs.writeFile(visualPath, Buffer.from('visual'));
+      await fs.writeFile(videoPath, Buffer.from('video'));
+      const production = {
+        id: productionId, status: 'ready',
+        strategy: { topic: 'Narration recovery' },
+        script: {
+          title: 'Narration recovery',
+          fullScript: 'A complete script that demonstrates reliable narration recovery and explicit operator controls.'.repeat(4)
+        },
+        seo: {
+          title: 'Narration recovery',
+          description: 'A detailed explanation of reliable narration recovery for production workflows.',
+          tags: ['narration', 'recovery', 'workflow']
+        },
+        assets: {
+          audio: { path: path.join(directory, 'missing.mp3.info'), status: 'unavailable', simulated: true, error: 'Provider quota exhausted' },
+          finalVideo: { path: videoPath, simulated: false }, thumbnail: { path: visualPath }
+        },
+        timeline: {}, priority: 50, scheduledPublishTime: new Date(Date.now() + 86400000).toISOString()
+      };
+      await db.saveProductionData(production);
+      await db.saveProductionSnapshot(production);
+      await db.replaceProductionScenes(productionId, [{
+        id: 'scene-narration-1', label: 'Opening', scriptText: 'This narration must be recovered.',
+        prompt: 'Opening visual', duration: 8, assetType: 'image', assetOrigin: 'generated', assetPath: visualPath,
+        status: 'ready', narrationStatus: 'unavailable', narrationError: 'Provider quota exhausted', rightsConfirmed: true
+      }]);
+
+      const blockedQuality = await new OperatorService(db).runQualityChecks({
+        ...production, scenes: await db.listProductionScenes(productionId)
+      }, {});
+      if (blockedQuality.passed || !blockedQuality.blockingFailures.includes('narration')) {
+        throw new Error('Missing narration did not block production quality');
+      }
+
+      let failProvider = true;
+      const generator = {
+        async generateTTSAudio(_text, outputPath) {
+          if (failProvider) {
+            this.lastNarrationResult = {
+              status: 'failed', provider: 'openai', model: 'gpt-4o-mini-tts',
+              generatedAt: new Date().toISOString(), error: 'Provider quota exhausted',
+              cost: { provider: 'openai', amount: null, invoiceRequired: true }
+            };
+            throw new Error('Provider quota exhausted');
+          }
+          await fs.writeFile(outputPath, Buffer.from('recovered narration'));
+          this.lastNarrationResult = {
+            status: 'ready', path: outputPath, provider: 'openai', model: 'gpt-4o-mini-tts',
+            externalTaskId: 'tts-task-1', generatedAt: new Date().toISOString(),
+            cost: { provider: 'openai', amount: null, invoiceRequired: true }
+          };
+          return outputPath;
+        },
+        isUsableAudioFile: async filePath => Boolean(filePath && await fs.stat(filePath).then(stat => stat.size > 0).catch(() => false))
+      };
+      const service = new SceneRepairService(db, generator, { dataRoot: directory, logger: this.logger });
+
+      let confirmationBlocked = false;
+      try {
+        await service.regenerateNarration(productionId, 'scene-narration-1');
+      } catch (error) {
+        confirmationBlocked = error.code === 'NARRATION_COST_CONFIRMATION_REQUIRED';
+      }
+      if (!confirmationBlocked) throw new Error('Narration regeneration bypassed the provider-cost confirmation');
+
+      let outagePersisted = false;
+      try {
+        await service.regenerateNarration(productionId, 'scene-narration-1', { confirmCost: true });
+      } catch (_error) {
+        const failed = await db.getProductionScene(productionId, 'scene-narration-1');
+        outagePersisted = failed.narrationStatus === 'failed' && failed.narrationProvider === 'openai' && /quota/.test(failed.narrationError);
+      }
+      if (!outagePersisted) throw new Error('Narration provider failure evidence was not persisted');
+
+      failProvider = false;
+      const recovered = await service.regenerateNarration(productionId, 'scene-narration-1', { confirmCost: true });
+      if (
+        recovered.narrationStatus !== 'current' || recovered.narrationProvider !== 'openai' ||
+        recovered.narrationModel !== 'gpt-4o-mini-tts' || recovered.narrationTaskId !== 'tts-task-1' ||
+        recovered.status !== 'needs_rebuild'
+      ) {
+        throw new Error('Narration-only recovery did not preserve provider evidence and rebuild state');
+      }
+
+      let weakSilenceBlocked = false;
+      try {
+        await service.setSilenceOverride(productionId, { enabled: true, confirmed: true, reason: 'silent' });
+      } catch (error) {
+        weakSilenceBlocked = /at least 10/.test(error.message);
+      }
+      if (!weakSilenceBlocked) throw new Error('Intentional silence was accepted without a meaningful reason');
+
+      await service.setSilenceOverride(productionId, {
+        enabled: true, confirmed: true, reason: 'This visual demonstration intentionally uses captions only.'
+      });
+      const silenceBundle = await db.getProductionBundle(productionId);
+      const silenceQuality = await new OperatorService(db).runQualityChecks(silenceBundle, {});
+      const narrationCheck = silenceQuality.checks.find(check => check.id === 'narration');
+      if (!narrationCheck?.passed || silenceBundle.scenes[0].narrationStatus !== 'intentional_silence') {
+        throw new Error('Confirmed intentional silence did not satisfy the narration evidence gate');
+      }
+
+      const revisions = await db.listProductionSceneRevisions(productionId);
+      for (const action of ['regenerate_narration', 'confirm_intentional_silence']) {
+        if (!revisions.some(revision => revision.action === action)) throw new Error(`Narration history is missing ${action}`);
+      }
+    } finally {
+      await db.close();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+    this.logger.info('Narration reliability and recovery test completed successfully');
+  }
+
   async testProvenanceDesk() {
     const fs = require('fs').promises;
     const os = require('os');
@@ -964,13 +1114,15 @@ class SystemTest {
     await db.initialize();
     const productionId = 'prod-provenance-test';
     const videoPath = path.join(directory, 'video.mp4');
+    const audioPath = path.join(directory, 'narration.mp3');
     await fs.writeFile(videoPath, Buffer.from('test-video'));
+    await fs.writeFile(audioPath, Buffer.from('test-audio'));
 
     try {
       await db.saveProductionData({
         id: productionId,
         status: 'needs_review',
-        assets: { finalVideo: { path: videoPath, simulated: false } },
+        assets: { finalVideo: { path: videoPath, simulated: false }, audio: { path: audioPath, status: 'ready', simulated: false, provider: 'fixture-tts' } },
         timeline: {}, scheduledPublishTime: new Date(Date.now() + 86400000).toISOString(),
         priority: 50, estimatedDuration: '1:00'
       });
@@ -999,7 +1151,7 @@ class SystemTest {
           description: 'A detailed description of an evidence-aware automation workflow for careful channel operators.',
           tags: ['automation', 'evidence', 'workflow']
         },
-        assets: { finalVideo: { path: videoPath, simulated: false } }
+        assets: { finalVideo: { path: videoPath, simulated: false }, audio: { path: audioPath, status: 'ready', simulated: false, provider: 'fixture-tts' } }
       };
       await db.saveProductionSnapshot(production);
 
@@ -1327,13 +1479,18 @@ class SystemTest {
 
   async testPublishingSafety() {
     const { PublishingSchedulingAgent } = require('./agents/publishing-scheduling-agent');
+    const intentionalAudio = {
+      intentionalSilence: true,
+      silenceReason: 'This test fixture is intentionally silent.',
+      silenceConfirmedAt: new Date().toISOString()
+    };
     const agent = new PublishingSchedulingAgent({
       updateScheduleEntry: async () => {}
     }, {});
 
     agent.publishQueue = [
-      { productionId: 'prod-a', title: 'A', status: 'scheduled', metadata: {} },
-      { productionId: 'prod-b', title: 'B', status: 'scheduled', metadata: {} }
+      { productionId: 'prod-a', title: 'A', status: 'scheduled', metadata: { audio: intentionalAudio } },
+      { productionId: 'prod-b', title: 'B', status: 'scheduled', metadata: { audio: intentionalAudio } }
     ];
     agent.uploadToYouTube = async () => ({ id: 'youtube-1' });
 
@@ -1342,6 +1499,17 @@ class SystemTest {
     if (agent.publishQueue.length !== 1 || agent.publishQueue[0].productionId !== 'prod-b') {
       throw new Error('publishContent removed the wrong publish queue entries');
     }
+
+    const missingNarration = new PublishingSchedulingAgent({ updateScheduleEntry: async () => {} }, {});
+    missingNarration.publishQueue = [{ productionId: 'prod-no-audio', status: 'scheduled', metadata: {} }];
+    missingNarration.uploadToYouTube = async () => { throw new Error('Upload must not start without narration'); };
+    let narrationPublishBlocked = false;
+    try {
+      await missingNarration.publishContent('prod-no-audio');
+    } catch (error) {
+      narrationPublishBlocked = error.code === 'NARRATION_REQUIRED';
+    }
+    if (!narrationPublishBlocked) throw new Error('Publishing accepted a production without narration evidence');
 
     let missingFileRejected = false;
     try {
@@ -1359,7 +1527,7 @@ class SystemTest {
       updateScheduleEntry: async entry => uncertainUpdates.push({ ...entry })
     }, {});
     uncertain.publishQueue = [
-      { id: 'schedule-uncertain', productionId: 'prod-uncertain', title: 'Uncertain', status: 'scheduled', metadata: {} }
+      { id: 'schedule-uncertain', productionId: 'prod-uncertain', title: 'Uncertain', status: 'scheduled', metadata: { audio: intentionalAudio } }
     ];
     let uploadAttempts = 0;
     uncertain.uploadToYouTube = async entry => {
@@ -1387,7 +1555,7 @@ class SystemTest {
     let reconciliationCalls = 0;
     const recorded = {
       id: 'schedule-recorded', productionId: 'prod-recorded', title: 'Recorded', status: 'uploaded',
-      youtubeId: 'youtube-existing', metadata: {}
+      youtubeId: 'youtube-existing', metadata: { audio: intentionalAudio }
     };
     const reconcile = new PublishingSchedulingAgent({
       getLatestScheduleEntry: async () => recorded,
@@ -1568,12 +1736,26 @@ class SystemTest {
       throw new Error('Production without a final video was scheduled for publishing');
     }
 
+    const missingNarration = await agent.scheduleContent({
+      id: 'prod-no-narration', script: { title: 'No narration' }, priority: 50,
+      scheduledPublishTime: new Date().toISOString(),
+      assets: { finalVideo: { path: 'video.mp4' } }, seo: {}
+    });
+    if (missingNarration !== null) throw new Error('Production without narration was scheduled for publishing');
+
     const real = await agent.scheduleContent({
       id: 'prod-real',
       script: { title: 'Real' },
       priority: 50,
       scheduledPublishTime: new Date().toISOString(),
-      assets: { finalVideo: { path: 'video.mp4' }, thumbnail: {}, captions: {} },
+      assets: {
+        finalVideo: { path: 'video.mp4' }, thumbnail: {}, captions: {},
+        audio: {
+          intentionalSilence: true,
+          silenceReason: 'This fixture intentionally uses a silent timeline.',
+          silenceConfirmedAt: new Date().toISOString()
+        }
+      },
       seo: {}
     });
     if (!real || agent.publishQueue.length !== 1) {
@@ -1675,12 +1857,19 @@ class SystemTest {
         throw new Error('Rendered slideshow video is empty');
       }
 
-      // Silent fallback: an unusable audio path must still yield a playable output
+      // Missing narration must fail closed unless the operator explicitly confirmed silence.
       const finalPath = path.join(dir, 'final.mp4');
-      await generator.addAudioToVideo(videoPath, path.join(dir, 'missing.mp3'), finalPath);
+      let missingNarrationBlocked = false;
+      try {
+        await generator.addAudioToVideo(videoPath, path.join(dir, 'missing.mp3'), finalPath);
+      } catch (error) {
+        missingNarrationBlocked = error.code === 'NARRATION_REQUIRED';
+      }
+      if (!missingNarrationBlocked) throw new Error('Missing narration silently produced a final video');
+      await generator.addAudioToVideo(videoPath, path.join(dir, 'missing.mp3'), finalPath, { allowSilent: true });
       const finalStats = await fs.stat(finalPath);
       if (!finalStats.size) {
-        throw new Error('Silent-audio fallback did not produce a video');
+        throw new Error('Explicit intentional-silence assembly did not produce a video');
       }
 
       const hybridPath = path.join(dir, 'hybrid.mp4');

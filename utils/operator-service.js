@@ -55,6 +55,32 @@ class OperatorService {
         'Final video file exists on disk'));
     }
 
+    const audio = production.assets?.audio || {};
+    const intentionalSilence = audio.intentionalSilence === true &&
+      String(audio.silenceReason || '').trim().length >= 10 &&
+      Boolean(audio.silenceConfirmedAt);
+    const productionAudioReady = !audio.simulated && await this.fileExists(audio.path);
+    const scenes = production.scenes || [];
+    let sceneAudioReady = false;
+    if (scenes.length) {
+      const readiness = [];
+      for (const scene of scenes) {
+        readiness.push(scene.narrationStatus === 'intentional_silence' || (
+          scene.narrationStatus === 'current' && await this.fileExists(scene.audioPath)
+        ));
+      }
+      sceneAudioReady = readiness.every(Boolean);
+    }
+    const narrationReady = intentionalSilence || productionAudioReady || sceneAudioReady;
+    checks.push(this.check('narration', narrationReady,
+      intentionalSilence
+        ? `Intentional silence confirmed: ${audio.silenceReason}`
+        : narrationReady
+          ? `Narration is ready${audio.provider ? ` via ${audio.provider}` : ''}`
+          : audio.intentionalSilence
+            ? 'Intentional silence requires an operator confirmation and reason of at least 10 characters'
+            : 'Narration is missing or unusable; regenerate it before approval'));
+
     const matchedBannedTopics = bannedTopics.filter(topic =>
       topic && combinedText.includes(String(topic).toLowerCase())
     );
@@ -73,10 +99,10 @@ class OperatorService {
           ? 'No externally verifiable factual claims were declared'
           : `${unresolved} factual claim${unresolved === 1 ? '' : 's'} still require evidence review`));
 
-    const scenes = production.scenes || [];
     if (scenes.length) {
       const invalidScenes = scenes.filter(scene =>
-        !scene.assetPath || ['missing_asset', 'failed', 'generating', 'needs_rebuild', 'visual_stale'].includes(scene.status) || scene.narrationStatus === 'stale'
+        !scene.assetPath || ['missing_asset', 'failed', 'generating', 'needs_rebuild', 'visual_stale'].includes(scene.status) ||
+        !['current', 'intentional_silence'].includes(scene.narrationStatus)
       );
       const unlicensedUploads = scenes.filter(scene => scene.assetOrigin === 'uploaded' && !scene.rightsConfirmed);
       checks.push(this.check('scene_integrity', invalidScenes.length === 0,

@@ -566,6 +566,31 @@ class YouTubeAutomationAgent {
       }
     });
 
+    this.app.post('/api/content/:productionId/scenes/:sceneId/narration', protect, async (req, res) => {
+      try {
+        if (!this.scenes) return res.status(503).json({ error: 'Narration recovery requires completed setup' });
+        const result = await this.scenes.regenerateNarration(req.params.productionId, req.params.sceneId, req.body || {});
+        await this.refreshContentReview(req.params.productionId, 'Narration regenerated; rebuild the final video before approval');
+        return res.status(202).json({ success: true, result: this.scenes.decorateScene(result, req.params.productionId) });
+      } catch (error) {
+        return res.status(error.status || 400).json({ success: false, error: error.message, code: error.code, details: error.details });
+      }
+    });
+
+    this.app.post('/api/content/:productionId/narration/silence', protect, async (req, res) => {
+      try {
+        if (!this.scenes) return res.status(503).json({ error: 'Narration recovery requires completed setup' });
+        const result = await this.scenes.setSilenceOverride(req.params.productionId, req.body || {});
+        await this.refreshContentReview(
+          req.params.productionId,
+          result.enabled ? 'Intentional silence recorded; rebuild and review before approval' : 'Narration is required again; regenerate it before approval'
+        );
+        return res.json({ success: true, result });
+      } catch (error) {
+        return res.status(error.status || 400).json({ success: false, error: error.message, code: error.code, details: error.details });
+      }
+    });
+
     this.app.put(
       '/api/content/:productionId/scenes/:sceneId/asset',
       protect,
@@ -1374,7 +1399,8 @@ class YouTubeAutomationAgent {
       estimatedDuration: bundle.estimated_duration,
       privacyStatus: editorData.privacyStatus || process.env.DEFAULT_PRIVACY_STATUS || 'private',
       provenance: bundle.provenance,
-      containsSyntheticMedia: bundle.provenance?.containsSyntheticMedia === true
+      containsSyntheticMedia: bundle.provenance?.containsSyntheticMedia === true,
+      scenes: bundle.scenes || []
     };
     const profile = await this.db.getChannelProfile() || {};
     const quality = await this.operator.runQualityChecks(productionData, profile);
@@ -1401,6 +1427,7 @@ class YouTubeAutomationAgent {
         seo: productionData.seo,
         thumbnail: productionData.assets.thumbnail,
         video: productionData.assets.finalVideo,
+        audio: productionData.assets.audio,
         captions: productionData.assets.captions,
         privacyStatus: editorData.privacyStatus || process.env.DEFAULT_PRIVACY_STATUS || 'private',
         containsSyntheticMedia: productionData.containsSyntheticMedia

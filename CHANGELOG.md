@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Made narration fail-closed across production assembly, quality review, scheduling, and publishing; missing TTS can no longer silently become an approvable video
+- Added narration-only scene recovery with persistent provider, model, task, generation-time, cost, and failure evidence
+- Added a reasoned, reversible intentional-silence override and scene-aware silent-segment mixing for explicitly silent productions
 - Added a persistent Scene Repair Studio with scene-level narration, prompts, timing, provider/task evidence, asset origin, rights state, source links, locks, and revision history
 - Added selective scene editing, reordering, paid regeneration confirmation, licensed image/video replacement, narration invalidation, and scene-aware caption rebuilding
 - Final scene rebuilds now create a new MP4 while preserving the previous artifact; incomplete, stale, unlicensed, or unrepaired scenes block approval
