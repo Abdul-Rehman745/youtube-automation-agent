@@ -897,6 +897,39 @@ class YouTubeAutomationAgent {
       return res.json({ success: true, result: recommendation });
     });
 
+    this.app.get('/api/retention/:videoId', async (req, res) => {
+      const videoId = String(req.params.videoId || '').trim();
+      if (!/^[A-Za-z0-9_-]{1,100}$/.test(videoId)) {
+        return res.status(400).json({ error: 'A valid YouTube video ID is required' });
+      }
+      const snapshots = await this.db.listRetentionSnapshots({ videoId, limit: 10 });
+      return res.json({ success: true, result: snapshots });
+    });
+
+    this.app.post('/api/retention/:videoId/refresh', protect, async (req, res) => {
+      try {
+        const videoId = String(req.params.videoId || '').trim();
+        const measurementWindow = String(req.body?.measurementWindow || 'rolling');
+        if (!/^[A-Za-z0-9_-]{1,100}$/.test(videoId)) {
+          return res.status(400).json({ error: 'A valid YouTube video ID is required' });
+        }
+        if (!['24h', '7d', 'rolling'].includes(measurementWindow)) {
+          return res.status(400).json({ error: 'Measurement window must be 24h, 7d, or rolling' });
+        }
+        if (!this.agents.analytics) {
+          return res.status(503).json({ error: 'YouTube Analytics is not initialized' });
+        }
+        const report = await this.agents.analytics.analyzeVideoPerformance(videoId, { measurementWindow });
+        return res.json({
+          success: true,
+          result: report.retentionSnapshot || null,
+          retention: report.retention
+        });
+      } catch (error) {
+        return res.status(error.status || 400).json({ error: error.message });
+      }
+    });
+
     this.app.post('/api/ideas', protect, async (req, res) => {
       const topic = String(req.body?.topic || '').trim();
       if (!topic || topic.length > 200) return res.status(400).json({ error: 'A topic of 200 characters or less is required' });

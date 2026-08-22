@@ -65,6 +65,13 @@ class AnalyticsOptimizationAgent {
 
       // Get analytics data
       const analytics = await this.getVideoAnalytics(videoId, period);
+      const context = await this.db.getPublishedContentContext(videoId);
+
+      // Fetch the granular retention curve separately so its absence never
+      // converts otherwise-real channel analytics into simulated data.
+      const retention = analytics.simulated
+        ? { available: false, simulated: true, reason: 'base_analytics_unavailable', points: [] }
+        : await this.getAudienceRetention(videoId, period, videoDetails.duration);
       
       // Analyze thumbnail performance
       const thumbnailMetrics = await this.analyzeThumbnailPerformance(videoId, period);
@@ -79,6 +86,7 @@ class AnalyticsOptimizationAgent {
         videoId,
         videoDetails,
         analytics,
+        retention,
         thumbnailMetrics,
         seoMetrics,
         insights,
@@ -92,12 +100,27 @@ class AnalyticsOptimizationAgent {
       
       // Save to database
       await this.db.saveAnalyticsReport(performanceReport);
-      const context = await this.db.getPublishedContentContext(videoId);
       performanceReport.learningSnapshot = await this.learning.capture(
         performanceReport,
         context,
         measurementWindow
       );
+      if (retention.available) {
+        performanceReport.retentionSnapshot = await this.learning.captureRetention(
+          {
+            ...retention,
+            videoId,
+            title: videoDetails.title,
+            publishedAt: videoDetails.publishedAt
+          },
+          context,
+          measurementWindow,
+          {
+            views: analytics.views?.totalViews,
+            impressions: analytics.views?.totalImpressions
+          }
+        );
+      }
       
       this.logger.info(`Analysis complete. Performance score: ${performanceReport.performance.score}/100`);
       return performanceReport;
@@ -699,6 +722,52 @@ class AnalyticsOptimizationAgent {
       topPerformers: recentReports.slice(0, 5),
       insights: this.generateChannelInsights(recentReports)
     };
+  }
+
+  async getAudienceRetention(videoId, period = null, isoDuration = null) {
+    const endDate = period?.endDate || new Date().toISOString().split('T')[0];
+    const startDate = period?.startDate || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    try {
+      const response = await this.youtubeAnalytics.reports.query({
+        ids: 'channel==MINE',
+        startDate,
+        endDate,
+        metrics: 'audienceWatchRatio,relativeRetentionPerformance,startedWatching,stoppedWatching,totalSegmentImpressions',
+        dimensions: 'elapsedVideoTimeRatio',
+        filters: `video==${videoId}`
+      });
+      const headers = (response.data.columnHeaders || []).map(header => header.name);
+      const index = name => headers.indexOf(name);
+      const value = (row, name) => {
+        const position = index(name);
+        return position >= 0 ? Number(row[position] || 0) : 0;
+      };
+      const points = (response.data.rows || []).map(row => ({
+        elapsedRatio: value(row, 'elapsedVideoTimeRatio'),
+        audienceWatchRatio: value(row, 'audienceWatchRatio'),
+        relativeRetentionPerformance: value(row, 'relativeRetentionPerformance'),
+        startedWatching: value(row, 'startedWatching'),
+        stoppedWatching: value(row, 'stoppedWatching'),
+        totalSegmentImpressions: value(row, 'totalSegmentImpressions')
+      })).filter(point => point.elapsedRatio > 0);
+      return {
+        available: points.length > 0,
+        simulated: false,
+        reason: points.length ? null : 'no_retention_rows',
+        period: { startDate, endDate },
+        durationSeconds: this.parseISODurationSeconds(isoDuration),
+        points
+      };
+    } catch (error) {
+      this.logger.warn(`Audience retention curve unavailable for ${videoId}: ${error.message}`);
+      return { available: false, simulated: false, reason: 'retention_api_unavailable', points: [] };
+    }
+  }
+
+  parseISODurationSeconds(value) {
+    const match = String(value || '').match(/^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$/);
+    if (!match) return 0;
+    return Number(match[1] || 0) * 86400 + Number(match[2] || 0) * 3600 + Number(match[3] || 0) * 60 + Number(match[4] || 0);
   }
 
   getLearningSummary() {

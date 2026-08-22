@@ -2,7 +2,8 @@ const ui = {
   state: null,
   currentView: 'overview',
   refreshing: false,
-  toastTimer: null
+  toastTimer: null,
+  retentionSnapshotId: null
 };
 
 const $ = selector => document.querySelector(selector);
@@ -312,6 +313,7 @@ function renderAnalytics(analytics, learning = {}) {
   $('#top-performers').innerHTML = performers.length ? performers.map(item => `
     <article class="performer-card"><strong>${escapeHTML(item.videoDetails?.title || item.title || 'Untitled video')}</strong><div class="meta-line">Performance ${escapeHTML(item.performance?.score ?? item.performance_score ?? '—')} / 100</div></article>`).join('') : empty('No analyzed videos yet.');
   renderLearning(learning);
+  renderRetention(learning.retention || {});
 }
 
 function renderLearning(learning = {}) {
@@ -339,6 +341,86 @@ function renderLearning(learning = {}) {
         </span>
       </div>
     </article>`).join('') : empty('No recommendation yet. Lumen needs at least two real, sufficiently exposed measurements.');
+}
+
+function renderRetention(retention = {}) {
+  const snapshots = Array.isArray(retention.snapshots) ? retention.snapshots : [];
+  const select = $('#retention-snapshot-select');
+  const refresh = $('#refresh-retention-button');
+  if (!snapshots.length) {
+    ui.retentionSnapshotId = null;
+    select.innerHTML = '<option value="">No measured curves yet</option>';
+    select.disabled = true;
+    refresh.disabled = true;
+    $('#retention-meta').innerHTML = '';
+    $('#retention-chart').innerHTML = empty('Retention curves appear after a published video reaches a real analytics measurement window.');
+    $('#retention-scenes').innerHTML = '';
+    return;
+  }
+
+  if (!snapshots.some(item => item.id === ui.retentionSnapshotId)) ui.retentionSnapshotId = snapshots[0].id;
+  select.disabled = false;
+  refresh.disabled = false;
+  select.innerHTML = snapshots.map(item => `<option value="${escapeHTML(item.id)}" ${item.id === ui.retentionSnapshotId ? 'selected' : ''}>${escapeHTML(item.title || item.videoId)} · ${escapeHTML(label(item.surface))} · ${escapeHTML(item.measurementWindow)}</option>`).join('');
+  const snapshot = snapshots.find(item => item.id === ui.retentionSnapshotId) || snapshots[0];
+  refresh.dataset.videoId = snapshot.videoId;
+  refresh.dataset.measurementWindow = snapshot.measurementWindow;
+
+  const summary = snapshot.summary || {};
+  $('#retention-meta').innerHTML = [
+    `${snapshot.points?.length || 0} real points`,
+    `${snapshot.sceneMetrics?.length || 0} scenes`,
+    `${summary.dropoffCount || 0} drop-offs`,
+    `${summary.rewatchCount || 0} rewatch signals`,
+    `${escapeHTML(label(snapshot.confidence))} confidence`,
+    `${escapeHTML(snapshot.measurementWindow)} window`
+  ].map(item => `<span>${item}</span>`).join('');
+  $('#retention-chart').innerHTML = retentionChart(snapshot);
+  $('#retention-scenes').innerHTML = (snapshot.sceneMetrics || []).map(scene => `
+    <article class="retention-scene ${escapeHTML(scene.signal)}">
+      <div class="retention-scene-heading"><div><span>Scene ${Number(scene.position || 0) + 1}</span><strong>${escapeHTML(scene.label)}</strong></div>${statusChip(scene.signal)}</div>
+      <div class="retention-metrics">
+        <div><span>Average watching</span><strong>${(Number(scene.averageWatchRatio || 0) * 100).toFixed(1)}%</strong></div>
+        <div><span>Scene change</span><strong>${Number(scene.changePoints || 0) > 0 ? '+' : ''}${Number(scene.changePoints || 0).toFixed(1)} pts</strong></div>
+        <div><span>Relative retention</span><strong>${(Number(scene.averageRelativeRetention || 0) * 100).toFixed(1)}%</strong></div>
+        <div><span>Sharpest drop</span><strong>${Number(scene.largestDropPoints || 0).toFixed(1)} pts</strong></div>
+      </div>
+    </article>`).join('') || empty('The saved curve could not be mapped to a scene timeline.');
+}
+
+function retentionChart(snapshot = {}) {
+  const points = Array.isArray(snapshot.points) ? snapshot.points : [];
+  if (points.length < 2) return empty('This snapshot does not contain enough points for a curve.');
+  const width = 1000;
+  const height = 280;
+  const left = 46;
+  const right = 18;
+  const top = 18;
+  const bottom = 38;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const maxRatio = Math.max(1, Math.min(1.5, Math.max(...points.map(point => Number(point.audienceWatchRatio || 0))) * 1.05));
+  const x = ratio => left + Math.max(0, Math.min(1, Number(ratio || 0))) * plotWidth;
+  const y = ratio => top + (1 - Math.max(0, Math.min(maxRatio, Number(ratio || 0))) / maxRatio) * plotHeight;
+  const line = points.map(point => `${x(point.elapsedRatio).toFixed(1)},${y(point.audienceWatchRatio).toFixed(1)}`).join(' ');
+  const duration = Math.max(1, Number(snapshot.durationSeconds || 1));
+  const sceneBands = (snapshot.sceneMetrics || []).map((scene, index) => {
+    const start = x(Number(scene.startSeconds || 0) / duration);
+    const end = x(Number(scene.endSeconds || 0) / duration);
+    return `<g><rect x="${start.toFixed(1)}" y="${top}" width="${Math.max(1, end - start).toFixed(1)}" height="${plotHeight}" class="retention-band band-${index % 2}"/><line x1="${start.toFixed(1)}" y1="${top}" x2="${start.toFixed(1)}" y2="${top + plotHeight}" class="scene-boundary"/><title>${escapeHTML(scene.label)}</title></g>`;
+  }).join('');
+  const grid = [0.25, 0.5, 0.75, 1].map(value => {
+    const lineY = y(value);
+    return `<line x1="${left}" y1="${lineY.toFixed(1)}" x2="${width - right}" y2="${lineY.toFixed(1)}" class="retention-grid-line"/><text x="${left - 8}" y="${(lineY + 4).toFixed(1)}" text-anchor="end">${Math.round(value * 100)}%</text>`;
+  }).join('');
+  return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-labelledby="retention-chart-title retention-chart-desc">
+    <title id="retention-chart-title">Audience retention for ${escapeHTML(snapshot.title || snapshot.videoId)}</title>
+    <desc id="retention-chart-desc">A ${points.length}-point audience retention curve divided by ${snapshot.sceneMetrics?.length || 0} production scenes.</desc>
+    ${sceneBands}${grid}
+    <polyline points="${line}" class="retention-line"/>
+    <text x="${left}" y="${height - 10}" text-anchor="start">Start</text>
+    <text x="${width - right}" y="${height - 10}" text-anchor="end">End</text>
+  </svg>`;
 }
 
 function renderActivation(activation = {}) {
@@ -891,6 +973,23 @@ document.addEventListener('click', async event => {
     await mutate(`/api/learning/recommendations/${encodeURIComponent(id)}/${action}`, 'POST', {}, message).catch(() => {});
   }
 
+  const refreshRetention = event.target.closest('#refresh-retention-button');
+  if (refreshRetention?.dataset.videoId) {
+    refreshRetention.disabled = true;
+    try {
+      await api(`/api/retention/${encodeURIComponent(refreshRetention.dataset.videoId)}/refresh`, {
+        method: 'POST',
+        body: JSON.stringify({ measurementWindow: refreshRetention.dataset.measurementWindow || 'rolling' })
+      });
+      showToast('Retention curve refreshed from YouTube Analytics.');
+      await refreshDashboard(true);
+    } catch (error) {
+      showToast(error.message, 'error');
+    } finally {
+      refreshRetention.disabled = false;
+    }
+  }
+
   const proposeShorts = event.target.closest('[data-propose-shorts]');
   if (proposeShorts) {
     const productionId = proposeShorts.dataset.proposeShorts;
@@ -1098,6 +1197,10 @@ document.addEventListener('click', async event => {
 });
 
 document.addEventListener('change', event => {
+  if (event.target.matches('#retention-snapshot-select')) {
+    ui.retentionSnapshotId = event.target.value;
+    renderRetention(ui.state?.learning?.retention || {});
+  }
   if (event.target.matches('[name="selectedTitleVariant"]')) {
     const title = event.target.selectedOptions[0]?.dataset.title;
     const input = $('#content-review-form [name="title"]');

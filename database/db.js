@@ -177,6 +177,23 @@ class Database {
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
         reviewed_at TEXT
       )`,
+      `CREATE TABLE IF NOT EXISTS retention_snapshots (
+        id TEXT PRIMARY KEY,
+        video_id TEXT NOT NULL,
+        production_id TEXT,
+        short_clip_id TEXT,
+        title TEXT,
+        surface TEXT NOT NULL DEFAULT 'long_form',
+        measurement_window TEXT NOT NULL,
+        published_at TEXT,
+        duration_seconds REAL NOT NULL,
+        points TEXT NOT NULL,
+        scene_metrics TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        confidence TEXT DEFAULT 'low',
+        measured_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(video_id, measurement_window)
+      )`,
       
       // Keywords Performance
       `CREATE TABLE IF NOT EXISTS keyword_performance (
@@ -1673,6 +1690,96 @@ class Database {
     };
   }
 
+  async saveRetentionSnapshot(snapshot) {
+    const existing = await this.getRow(
+      'SELECT id FROM retention_snapshots WHERE video_id = ? AND measurement_window = ?',
+      [snapshot.videoId, snapshot.measurementWindow]
+    );
+    const id = existing?.id || this.generateId('retention');
+    await this.executeQuery(
+      `INSERT INTO retention_snapshots (
+        id, video_id, production_id, short_clip_id, title, surface,
+        measurement_window, published_at, duration_seconds, points,
+        scene_metrics, summary, confidence, measured_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(video_id, measurement_window) DO UPDATE SET
+        production_id = excluded.production_id,
+        short_clip_id = excluded.short_clip_id,
+        title = excluded.title,
+        surface = excluded.surface,
+        published_at = excluded.published_at,
+        duration_seconds = excluded.duration_seconds,
+        points = excluded.points,
+        scene_metrics = excluded.scene_metrics,
+        summary = excluded.summary,
+        confidence = excluded.confidence,
+        measured_at = excluded.measured_at`,
+      [
+        id,
+        snapshot.videoId,
+        snapshot.productionId || null,
+        snapshot.shortClipId || null,
+        snapshot.title || null,
+        snapshot.surface || 'long_form',
+        snapshot.measurementWindow,
+        snapshot.publishedAt || null,
+        Number(snapshot.durationSeconds || 0),
+        JSON.stringify(snapshot.points || []),
+        JSON.stringify(snapshot.sceneMetrics || []),
+        JSON.stringify(snapshot.summary || {}),
+        snapshot.confidence || 'low',
+        snapshot.measuredAt || new Date().toISOString()
+      ]
+    );
+    return this.getRetentionSnapshot(id);
+  }
+
+  async getRetentionSnapshot(id) {
+    const row = await this.getRow('SELECT * FROM retention_snapshots WHERE id = ?', [id]);
+    return this.parseRetentionSnapshot(row);
+  }
+
+  async listRetentionSnapshots(options = {}) {
+    const conditions = [];
+    const params = [];
+    if (options.videoId) {
+      conditions.push('video_id = ?');
+      params.push(options.videoId);
+    }
+    if (options.surface) {
+      conditions.push('surface = ?');
+      params.push(options.surface);
+    }
+    if (options.measurementWindow) {
+      conditions.push('measurement_window = ?');
+      params.push(options.measurementWindow);
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const limit = Math.max(1, Math.min(50, Number(options.limit || 12)));
+    const rows = await this.getAllRows(
+      `SELECT * FROM retention_snapshots ${where} ORDER BY measured_at DESC LIMIT ?`,
+      [...params, limit]
+    );
+    return rows.map(row => this.parseRetentionSnapshot(row));
+  }
+
+  parseRetentionSnapshot(row) {
+    if (!row) return null;
+    return {
+      ...row,
+      videoId: row.video_id,
+      productionId: row.production_id,
+      shortClipId: row.short_clip_id,
+      measurementWindow: row.measurement_window,
+      publishedAt: row.published_at,
+      durationSeconds: Number(row.duration_seconds || 0),
+      measuredAt: row.measured_at,
+      points: JSON.parse(row.points || '[]'),
+      sceneMetrics: JSON.parse(row.scene_metrics || '[]'),
+      summary: JSON.parse(row.summary || '{}')
+    };
+  }
+
   async saveLearningRecommendation(recommendation) {
     const existing = await this.getRow(
       'SELECT id FROM learning_recommendations WHERE fingerprint = ?',
@@ -1772,6 +1879,8 @@ class Database {
     const selectedThumbnail = editorData.packagingExperiment?.thumbnailVariants?.[editorData.selectedThumbnailVariant];
     const isShort = metadata.contentType === 'short';
     const strategy = JSON.parse(row.strategy || '{}');
+    const sourceScenes = await this.listProductionScenes(sourceProductionId);
+    const shortClip = isShort && metadata.shortClipId ? await this.getShortClip(metadata.shortClipId) : null;
     return {
       productionId: sourceProductionId,
       shortClipId: metadata.shortClipId || null,
@@ -1783,8 +1892,38 @@ class Database {
         : strategy,
       script: JSON.parse(row.script || '{}'),
       thumbnail: selectedThumbnail?.concept ? { ...thumbnail, concept: selectedThumbnail.concept } : thumbnail,
-      seo: JSON.parse(row.seo || '{}')
+      seo: JSON.parse(row.seo || '{}'),
+      retentionScenes: this.buildRetentionSceneContext(sourceScenes, shortClip),
+      retentionDuration: isShort ? shortClip?.duration || null : sourceScenes.reduce((sum, scene) => sum + Number(scene.duration || 0), 0)
     };
+  }
+
+  buildRetentionSceneContext(scenes = [], shortClip = null) {
+    let cursor = 0;
+    const timeline = scenes.map(scene => {
+      const duration = Math.max(0, Number(scene.duration || 0));
+      const item = { ...scene, startSeconds: cursor, endSeconds: cursor + duration };
+      cursor += duration;
+      return item;
+    });
+    if (!shortClip) return timeline;
+
+    const clipStart = Math.max(0, Number(shortClip.startSeconds || 0));
+    const clipEnd = clipStart + Math.max(0, Number(shortClip.duration || 0));
+    const allowed = new Set(shortClip.sourceSceneIds || []);
+    return timeline.flatMap(scene => {
+      if (allowed.size && !allowed.has(scene.id)) return [];
+      const start = Math.max(scene.startSeconds, clipStart);
+      const end = Math.min(scene.endSeconds, clipEnd);
+      if (end <= start) return [];
+      return [{
+        ...scene,
+        sourceStartSeconds: start,
+        startSeconds: start - clipStart,
+        endSeconds: end - clipStart,
+        duration: end - start
+      }];
+    });
   }
 
   // Keyword performance

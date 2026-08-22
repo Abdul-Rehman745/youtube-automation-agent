@@ -1,10 +1,12 @@
 const crypto = require('crypto');
 const { Logger } = require('./logger');
+const { SceneRetentionEngine } = require('./scene-retention-engine');
 
 class ChannelLearningEngine {
   constructor(db) {
     this.db = db;
     this.logger = new Logger('ChannelLearning');
+    this.sceneRetention = new SceneRetentionEngine(db);
   }
 
   async capture(performanceReport, context = {}, measurementWindow = 'rolling') {
@@ -200,8 +202,11 @@ class ChannelLearningEngine {
   }
 
   async getSummary() {
-    const snapshots = await this.db.listPerformanceSnapshots({ reliableOnly: true });
-    const recommendations = await this.db.listLearningRecommendations({ limit: 50 });
+    const [snapshots, recommendations, retentionSnapshots] = await Promise.all([
+      this.db.listPerformanceSnapshots({ reliableOnly: true }),
+      this.db.listLearningRecommendations({ limit: 50 }),
+      this.db.listRetentionSnapshots ? this.db.listRetentionSnapshots({ limit: 12 }) : Promise.resolve([])
+    ]);
     const preferred = this.preferredSnapshotPerVideo(snapshots);
     return {
       measuredVideos: preferred.length,
@@ -215,8 +220,18 @@ class ChannelLearningEngine {
       approvedCount: recommendations.filter(item => item.status === 'approved').length,
       pendingCount: recommendations.filter(item => item.status === 'pending').length,
       lastMeasuredAt: snapshots[0]?.measuredAt || null,
-      evidencePolicy: 'Only real YouTube analytics are eligible; simulated fallbacks are excluded.'
+      evidencePolicy: 'Only real YouTube analytics are eligible; simulated fallbacks are excluded.',
+      retention: {
+        snapshotCount: retentionSnapshots.length,
+        longFormCount: retentionSnapshots.filter(item => item.surface === 'long_form').length,
+        shortsCount: retentionSnapshots.filter(item => item.surface === 'shorts').length,
+        snapshots: retentionSnapshots
+      }
     };
+  }
+
+  captureRetention(retentionReport, context = {}, measurementWindow = 'rolling', exposure = {}) {
+    return this.sceneRetention.capture(retentionReport, context, measurementWindow, exposure);
   }
 
   async getDueMeasurementWindows(video) {

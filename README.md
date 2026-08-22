@@ -12,6 +12,7 @@ Research topics → write scripts → generate narration and visuals → assembl
 
 The latest build expands AgentTube from evidence-first long-form production into a repairable, provider-flexible, multi-format channel workflow:
 
+- **Scene-aware retention:** collect YouTube's real 100-point audience-retention curve, map it to the durable production timeline, and review scene-specific drop-off, rewatch, and strong-hold evidence before it can guide future work.
 - **Shorts Repurposing Studio:** turn an approved production into three source-scene-backed 9:16 drafts, choose blurred, cropped, or stacked layouts, render mobile captions locally, and approve each Short on its own schedule.
 - **Scene-level repair:** edit, reorder, lock, replace, or regenerate one scene, then rebuild the final MP4 without discarding the rest of the production.
 - **Narration reliability:** missing, stale, simulated, or failed TTS now blocks assembly, approval, scheduling, and publishing; narration-only recovery and reasoned intentional silence are explicit operator actions.
@@ -110,6 +111,12 @@ After publication, Lumen captures comparable 24-hour and 7-day performance snaps
 Open **Analytics → What the agent learned** to review the evidence and confidence behind each recommendation. Pending or rejected recommendations never influence generation. Once you approve one, the next Autonomous Channel Operator run includes it as an explicit planning constraint. Simulated analytics fallbacks are stored as unverified and are never eligible for baselines or recommendations.
 
 When an approved learning calls for better packaging, Lumen prepares a control plus title and thumbnail variants for new videos. Review Studio shows those options before approval; the selected combination is the only one handed to the publishing queue. Lumen does not silently swap live YouTube metadata.
+
+### Find the exact scene that lost viewers
+
+At each real analytics window, AgentTube also requests YouTube's audience-retention curve and maps its 100 elapsed-time points onto the stored scene durations. Open **Analytics → Scene-aware retention** to see the curve divided by scene, compare absolute and relative retention, and inspect drop-off, rewatch, strong-hold, or steady signals for each beat.
+
+Retention snapshots are stored separately for long-form videos and Shorts. Missing, sparse, or simulated curves never enter this evidence layer. A scene finding creates a pending learning recommendation; it cannot guide future scripts, pacing, or scene structure until the operator approves it, and AgentTube never rewrites a published video. Use **Refresh curve** for a read-only update from YouTube Analytics, or `GET /api/retention/:videoId` to inspect stored evidence.
 
 ## From idea to published video
 

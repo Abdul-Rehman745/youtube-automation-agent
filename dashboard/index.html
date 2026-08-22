@@ -140,6 +140,19 @@
             <div id="learning-recommendations" class="learning-list"></div>
           </article>
         </div>
+        <article class="panel retention-studio">
+          <div class="panel-heading retention-heading">
+            <div><p class="eyebrow">SCENE-AWARE RETENTION</p><h2>Where viewers stay—and leave</h2><p>Real YouTube retention points mapped onto the exact production timeline.</p></div>
+            <div class="retention-controls">
+              <label><span class="sr-only">Retention snapshot</span><select id="retention-snapshot-select" aria-label="Choose a retention snapshot"></select></label>
+              <button id="refresh-retention-button" class="button secondary small" disabled>Refresh curve</button>
+            </div>
+          </div>
+          <div id="retention-meta" class="scene-summary"></div>
+          <div id="retention-chart" class="retention-chart"></div>
+          <div id="retention-scenes" class="retention-scene-list"></div>
+          <p class="callout retention-policy">Scene findings remain evidence only. They influence future scripts and pacing only after their recommendation is approved above; published videos are never edited automatically.</p>
+        </article>
         <article class="panel"><div class="panel-heading"><div><p class="eyebrow">TOP PERFORMERS</p><h2>What is working</h2></div></div><div id="top-performers" class="card-list"></div></article>
         <article class="panel activation-panel"><div class="panel-heading"><div><p class="eyebrow">LOCAL ACTIVATION</p><h2>First-run journey</h2></div></div><p class="callout">Calculated locally from your database and video files. Nothing is transmitted unless anonymous telemetry is explicitly enabled.</p><div id="activation-list" class="timeline"></div></article>
       </section>

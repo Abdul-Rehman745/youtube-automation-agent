@@ -25,6 +25,7 @@ class SystemTest {
       { name: 'Operator Workflow API', test: () => this.testOperatorWorkflowAPI() },
       { name: 'Autonomous Channel Operator', test: () => this.testAutonomousChannelOperator() },
       { name: 'Closed-loop Channel Learning', test: () => this.testChannelLearningLoop() },
+      { name: 'Scene-Aware Retention Studio', test: () => this.testSceneAwareRetentionStudio() },
       { name: 'Production Readiness Gate', test: () => this.testProductionReadinessGate() },
       { name: 'Durable Multi-Provider Video Generation', test: () => this.testVideoProviderLayer() },
       { name: 'Scene Repair Studio', test: () => this.testSceneRepairStudio() },
@@ -580,6 +581,130 @@ class SystemTest {
     }
 
     this.logger.info('Closed-loop channel learning test completed successfully');
+  }
+
+  async testSceneAwareRetentionStudio() {
+    const fs = require('fs').promises;
+    const os = require('os');
+    const { ChannelLearningEngine } = require('./utils/channel-learning-engine');
+    const { AnalyticsOptimizationAgent } = require('./agents/analytics-optimization-agent');
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'yaa-retention-'));
+    const db = new Database();
+    db.dbPath = path.join(directory, 'retention.db');
+    await db.initialize();
+
+    try {
+      const learning = new ChannelLearningEngine(db);
+      const points = Array.from({ length: 100 }, (_, index) => {
+        const elapsedRatio = (index + 1) / 100;
+        let audienceWatchRatio;
+        let relativeRetentionPerformance;
+        if (elapsedRatio <= 0.17) {
+          audienceWatchRatio = 1 - elapsedRatio * 0.4;
+          relativeRetentionPerformance = 0.64;
+        } else if (elapsedRatio <= 0.5) {
+          audienceWatchRatio = 0.93 - ((elapsedRatio - 0.17) / 0.33) * 0.48;
+          relativeRetentionPerformance = 0.31;
+        } else {
+          audienceWatchRatio = 0.45 - (elapsedRatio - 0.5) * 0.08;
+          relativeRetentionPerformance = 0.7;
+        }
+        return {
+          elapsedRatio,
+          audienceWatchRatio,
+          relativeRetentionPerformance,
+          startedWatching: index === 0 ? 800 : 0,
+          stoppedWatching: elapsedRatio > 0.17 && elapsedRatio <= 0.5 ? 5 : 1,
+          totalSegmentImpressions: 800
+        };
+      });
+      const context = {
+        productionId: 'retention-production',
+        contentFormat: 'long_form',
+        title: 'Scene retention fixture',
+        publishedAt: new Date(Date.now() - 8 * 86400000).toISOString(),
+        retentionDuration: 90,
+        retentionScenes: [
+          { id: 'scene-hook', position: 0, label: 'Hook', duration: 15 },
+          { id: 'scene-intro', position: 1, label: 'Introduction', duration: 30 },
+          { id: 'scene-demo', position: 2, label: 'Demonstration', duration: 45 }
+        ]
+      };
+      const snapshot = await learning.captureRetention({
+        available: true,
+        simulated: false,
+        videoId: 'retention-video-1',
+        title: context.title,
+        publishedAt: context.publishedAt,
+        durationSeconds: 90,
+        points
+      }, context, '7d', { views: 800, impressions: 12000 });
+
+      if (
+        !snapshot || snapshot.points.length !== 100 || snapshot.sceneMetrics.length !== 3 ||
+        snapshot.summary.primaryDropoff?.id !== 'scene-intro' || snapshot.confidence !== 'high'
+      ) {
+        throw new Error('The real retention curve was not mapped to the expected scene evidence');
+      }
+      const recommendation = (await db.listLearningRecommendations({ limit: 20 }))
+        .find(item => item.category === 'scene_retention');
+      if (!recommendation || recommendation.status !== 'pending' || recommendation.proposedChange.autoEditPublishedContent !== false) {
+        throw new Error('Scene retention learning bypassed pending review or published-content safety');
+      }
+      const approvedBeforeReview = await db.listLearningRecommendations({ status: 'approved', limit: 20 });
+      if (approvedBeforeReview.some(item => item.id === recommendation.id)) {
+        throw new Error('Pending scene retention learning entered autonomous planning');
+      }
+      await db.reviewLearningRecommendation(recommendation.id, 'approved');
+      const approvedAfterReview = await db.listLearningRecommendations({ status: 'approved', limit: 20 });
+      if (!approvedAfterReview.some(item => item.id === recommendation.id)) {
+        throw new Error('Approved scene retention learning was not made available to planning');
+      }
+
+      const skipped = await learning.captureRetention({
+        available: true,
+        simulated: true,
+        videoId: 'retention-simulated',
+        durationSeconds: 90,
+        points
+      }, context, '7d', { views: 1000 });
+      if (skipped !== null || (await db.listRetentionSnapshots({ limit: 10 })).length !== 1) {
+        throw new Error('Simulated retention evidence was persisted');
+      }
+
+      const clipped = db.buildRetentionSceneContext(context.retentionScenes, {
+        startSeconds: 10,
+        duration: 35,
+        sourceSceneIds: ['scene-hook', 'scene-intro']
+      });
+      if (clipped.length !== 2 || clipped[0].duration !== 5 || clipped[1].duration !== 30) {
+        throw new Error('Shorts retention context did not clip the source scene timeline correctly');
+      }
+
+      const analytics = new AnalyticsOptimizationAgent(db, { getYouTubeAuth: () => ({}) });
+      analytics.youtubeAnalytics = {
+        reports: {
+          query: async () => ({
+            data: {
+              columnHeaders: [
+                'elapsedVideoTimeRatio', 'audienceWatchRatio', 'relativeRetentionPerformance',
+                'startedWatching', 'stoppedWatching', 'totalSegmentImpressions'
+              ].map(name => ({ name })),
+              rows: [[0.01, 0.99, 0.7, 10, 1, 10]]
+            }
+          })
+        }
+      };
+      const apiCurve = await analytics.getAudienceRetention('fixture-video', null, 'PT2M30S');
+      if (!apiCurve.available || apiCurve.durationSeconds !== 150 || apiCurve.points[0].audienceWatchRatio !== 0.99) {
+        throw new Error('YouTube audience retention response was not normalized correctly');
+      }
+    } finally {
+      await db.close();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+
+    this.logger.info('Scene-Aware Retention Studio test completed successfully');
   }
 
   async testProductionReadinessGate() {
