@@ -17,7 +17,7 @@ class ProvenanceService {
     const sources = this.normalizeSources(production.strategy?.researchSources || []);
     const sourceIdByUrl = new Map(sources.map(source => [source.url, source.id]));
     const claims = this.normalizeClaims(production.script?.claims || [], sources, sourceIdByUrl);
-    const provenance = this.build({ sources, claims, containsSyntheticMedia: false });
+    const provenance = this.build({ sources, claims, containsSyntheticMedia: production.containsSyntheticMedia === true });
     await this.db.saveContentProvenance(productionId, provenance);
     return this.db.getContentProvenance(productionId);
   }

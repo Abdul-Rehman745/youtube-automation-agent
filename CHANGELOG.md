@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added a durable video-provider layer for Seedance 2.5, MiniMax H3, Gemini Omni Flash, Kling 3.0 Omni, and Wan 2.7
+- Added capability-aware automatic routing with local slideshow as the no-cost default and final fallback
+- Added persistent external media task IDs, provider/model evidence, cancellation handoff where supported, and restart-safe reuse of known provider tasks
+- Added hybrid long-form assembly, per-production paid-seconds caps, truthful fallback metadata, and automatic synthetic-media review handoff
+- Added dashboard provider controls and a separately opted-in paid AI-video readiness probe
+
 ## v2.8.0 — 2026-08-21
 
 - Added a persistent Research & Provenance Desk with source metadata, claim-to-source links, reviewer status, notes, and evidence summaries

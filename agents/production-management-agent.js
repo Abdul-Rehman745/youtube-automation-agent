@@ -10,7 +10,7 @@ class ProductionManagementAgent {
     this.logger = new Logger('ProductionManagement');
     this.pipeline = [];
     this.assets = new Map();
-    this.aiVideoGenerator = new AIVideoGenerator(credentials);
+    this.aiVideoGenerator = new AIVideoGenerator(credentials, { db });
   }
 
   async initialize() {
@@ -48,7 +48,7 @@ class ProductionManagementAgent {
     try {
       this.logger.info('Processing content for production...');
       
-      const { strategy, script, thumbnail, seo } = contentData;
+      const { strategy, script, thumbnail, seo, jobId = null } = contentData;
       
       // Create production entry
       const productionId = this.generateProductionId();
@@ -81,6 +81,7 @@ class ProductionManagementAgent {
         estimatedDuration: script.duration,
         createdAt: new Date().toISOString()
       };
+      productionData.jobId = jobId;
       
       // Add to pipeline
       this.pipeline.push(productionData);
@@ -559,7 +560,12 @@ class ProductionManagementAgent {
         productionData.script,
         productionData.assets.video.visualAssets || [],
         productionData.assets.audio.path,
-        finalVideoPath
+        finalVideoPath,
+        {
+          jobId: productionData.jobId,
+          productionId: productionData.id,
+          estimatedDuration: productionData.estimatedDuration
+        }
       );
 
       // The generator falls back to a placeholder .info file when it cannot render
@@ -576,8 +582,13 @@ class ProductionManagementAgent {
         duration: productionData.estimatedDuration,
         generatedWith: 'AI',
         resolution: '1920x1080',
-        format: 'mp4'
+        format: 'mp4',
+        provider: this.aiVideoGenerator.lastVideoResult || { actualProvider: 'slideshow', model: 'local-ffmpeg' }
       };
+      productionData.containsSyntheticMedia = Boolean(
+        this.aiVideoGenerator.lastVideoResult?.actualProvider &&
+        !['slideshow', 'simulation'].includes(this.aiVideoGenerator.lastVideoResult.actualProvider)
+      );
       
       this.logger.info('AI video assembly complete');
       return finalVideoPath;

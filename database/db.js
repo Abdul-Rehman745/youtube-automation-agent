@@ -247,6 +247,25 @@ class Database {
         PRIMARY KEY (job_id, stage),
         FOREIGN KEY (job_id) REFERENCES generation_jobs(id)
       )`,
+      `CREATE TABLE IF NOT EXISTS media_generation_tasks (
+        id TEXT PRIMARY KEY,
+        job_id TEXT,
+        production_id TEXT,
+        scene_index INTEGER NOT NULL,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        external_task_id TEXT,
+        status TEXT DEFAULT 'submitting',
+        request TEXT NOT NULL DEFAULT '{}',
+        provider_data TEXT NOT NULL DEFAULT '{}',
+        output_path TEXT,
+        error TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        completed_at TEXT,
+        UNIQUE(job_id, scene_index, provider),
+        FOREIGN KEY (job_id) REFERENCES generation_jobs(id)
+      )`,
       `CREATE TABLE IF NOT EXISTS production_snapshots (
         production_id TEXT PRIMARY KEY,
         strategy TEXT,
@@ -387,7 +406,14 @@ class Database {
       ['automation_paused', 'false', 'Pause generation and publishing automation'],
       ['channel_timezone', 'America/Chicago', 'Timezone used to present channel schedules'],
       ['max_daily_posts', '1', 'Maximum posts per day'],
-      ['content_buffer_days', '3', 'Days of content to keep in buffer']
+      ['content_buffer_days', '3', 'Days of content to keep in buffer'],
+      ['video_provider', 'slideshow', 'Video provider: slideshow, auto, seedance, minimax_h3, google_omni, kling, or wan'],
+      ['video_provider_order', 'seedance,minimax_h3,google_omni,kling,wan,slideshow', 'Provider priority used by automatic routing'],
+      ['video_generation_mode', 'hybrid', 'Use provider clips within a locally assembled long-form video'],
+      ['video_clip_duration', '8', 'Requested duration for each generated provider clip'],
+      ['video_max_generated_seconds', '60', 'Maximum paid provider seconds per production'],
+      ['video_resolution', '720p', 'Requested generated clip resolution'],
+      ['video_aspect_ratio', '16:9', 'Requested generated clip aspect ratio']
     ];
 
     for (const [key, value, description] of defaultSettings) {
@@ -704,6 +730,7 @@ class Database {
     return Promise.all(rows.map(async row => {
       const job = { ...row, details: JSON.parse(row.details || '{}'), cancelRequested: Boolean(row.cancel_requested) };
       job.checkpoints = await this.listGenerationCheckpoints(job.id);
+      job.mediaTasks = await this.listMediaGenerationTasks(job.id);
       return job;
     }));
   }
@@ -760,6 +787,60 @@ class Database {
       `DELETE FROM generation_checkpoints WHERE job_id = ? AND stage IN (${placeholders})`,
       [jobId, ...stages]
     );
+  }
+
+  async createMediaGenerationTask(input = {}) {
+    const id = this.generateId('media');
+    await this.executeQuery(
+      `INSERT INTO media_generation_tasks (
+        id, job_id, production_id, scene_index, provider, model, status, request, provider_data
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}')
+      ON CONFLICT(job_id, scene_index, provider) DO UPDATE SET
+        production_id = excluded.production_id, request = excluded.request, updated_at = datetime('now')`,
+      [id, input.jobId || null, input.productionId || null, input.sceneIndex, input.provider, input.model, input.status || 'submitting', JSON.stringify(input.request || {})]
+    );
+    return this.findMediaGenerationTask(input.jobId, input.sceneIndex, input.provider);
+  }
+
+  async findMediaGenerationTask(jobId, sceneIndex, provider) {
+    const row = await this.getRow(
+      'SELECT * FROM media_generation_tasks WHERE job_id IS ? AND scene_index = ? AND provider = ?',
+      [jobId || null, sceneIndex, provider]
+    );
+    return this.parseMediaGenerationTask(row);
+  }
+
+  async updateMediaGenerationTask(id, changes = {}) {
+    const current = this.parseMediaGenerationTask(await this.getRow('SELECT * FROM media_generation_tasks WHERE id = ?', [id]));
+    if (!current) return null;
+    await this.executeQuery(
+      `UPDATE media_generation_tasks SET model = ?, external_task_id = ?, status = ?, provider_data = ?,
+       output_path = ?, error = ?, completed_at = ?, updated_at = datetime('now') WHERE id = ?`,
+      [
+        changes.model ?? current.model,
+        changes.externalTaskId ?? current.external_task_id,
+        changes.status ?? current.status,
+        JSON.stringify(changes.providerData ?? current.providerData ?? {}),
+        changes.outputPath ?? current.output_path,
+        changes.error === undefined ? current.error : changes.error,
+        changes.completedAt === undefined ? current.completed_at : changes.completedAt,
+        id
+      ]
+    );
+    return this.parseMediaGenerationTask(await this.getRow('SELECT * FROM media_generation_tasks WHERE id = ?', [id]));
+  }
+
+  async listMediaGenerationTasks(jobId) {
+    const rows = await this.getAllRows('SELECT * FROM media_generation_tasks WHERE job_id = ? ORDER BY scene_index, created_at', [jobId]);
+    return rows.map(row => this.parseMediaGenerationTask(row));
+  }
+
+  parseMediaGenerationTask(row) {
+    return row ? {
+      ...row,
+      request: JSON.parse(row.request || '{}'),
+      providerData: JSON.parse(row.provider_data || '{}')
+    } : null;
   }
 
   async markInterruptedJobs() {

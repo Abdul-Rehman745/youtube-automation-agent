@@ -6,6 +6,7 @@ const { AIVideoGenerator } = require('./ai-video-generator');
 const { checkFFmpeg, runFFmpeg } = require('./ffmpeg');
 const { validateYouTubeMetadata } = require('./youtube-metadata-validator');
 const { Logger } = require('./logger');
+const { MediaGenerationService } = require('./media-generation-service');
 
 const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 
@@ -71,6 +72,7 @@ class ProductionReadinessService {
     try {
       checks.push(await this.executeCheck('text_provider', 'AI text provider', true, () => this.probeText()));
       checks.push(await this.executeCheck('image_provider', 'Image provider', false, () => this.probeImage(tempDir, Boolean(options.includePaidMedia))));
+      checks.push(await this.executeCheck('video_provider', 'AI video provider', true, () => this.probeVideoProvider(tempDir, Boolean(options.includePaidVideo))));
       checks.push(await this.executeCheck('voice_narration', 'Voice narration', true, () => this.probeNarration(tempDir)));
       checks.push(await this.executeCheck('video_assembly', 'Audio/video assembly', true, () => this.probeVideoAssembly(tempDir)));
       checks.push(await this.executeCheck('youtube_access', 'YouTube channel access', true, () => this.probeYouTube()));
@@ -167,6 +169,51 @@ class ProductionReadinessService {
     return { message: 'A live narration sample was generated.', details: { bytes: stats.size } };
   }
 
+  async probeVideoProvider(tempDir, includePaidVideo) {
+    if (this.probes.videoProvider) return this.probes.videoProvider({ tempDir, includePaidVideo });
+    const service = new MediaGenerationService(this.db, this.credentialManager.credentials || {});
+    const settings = await service.settings();
+    const requested = settings.provider;
+    const configured = requested === 'auto' ? service.registry.select('auto', settings.order) : service.registry.get(requested);
+    if (!configured || !configured.isAvailable()) {
+      if (requested === 'slideshow') {
+        return { message: 'Local slideshow video generation is selected; no paid AI video provider is required.', details: { provider: 'slideshow' } };
+      }
+      throw new Error(`${requested} is selected but its credentials are not configured`);
+    }
+    if (configured.id === 'slideshow') {
+      return { message: 'Local slideshow video generation is selected; no paid AI video provider is required.', details: { provider: 'slideshow' } };
+    }
+    if (!includePaidVideo) {
+      return {
+        status: 'skipped',
+        message: `${configured.id} is configured; the paid live video probe was not requested.`,
+        remediation: 'Enable “Include paid video probe” on the next readiness run to verify the selected model.',
+        details: { provider: configured.id, model: configured.model }
+      };
+    }
+    const outputPath = path.join(tempDir, 'readiness-provider.mp4');
+    const result = await service.generateClip({
+      jobId: null,
+      productionId: `readiness_${Date.now()}`,
+      scene: { index: Date.now() },
+      provider: configured,
+      outputPath,
+      request: {
+        prompt: 'A small red ball rolls slowly across a plain dark studio floor, static camera, no text.',
+        duration: configured.capabilities.minDuration || 4,
+        resolution: settings.resolution,
+        aspectRatio: settings.aspectRatio,
+        generateAudio: false
+      }
+    });
+    const stats = await fs.stat(result.outputPath);
+    return {
+      message: `${configured.id} created and returned a decodable MP4.`,
+      details: { provider: configured.id, model: configured.model, bytes: stats.size, taskId: result.task.external_task_id }
+    };
+  }
+
   async probeVideoAssembly(tempDir) {
     if (this.probes.videoAssembly) return this.probes.videoAssembly({ tempDir });
     if (!await checkFFmpeg()) throw new Error('FFmpeg is not available');
@@ -233,6 +280,7 @@ class ProductionReadinessService {
     const messages = {
       text_provider: 'Run npm run walkthrough, verify the selected model, and confirm provider credits or quota.',
       image_provider: 'Verify paid image access or rely on the built-in gradient visual fallback.',
+      video_provider: 'Configure the selected provider credentials, choose local slideshow, or rerun with the paid video probe enabled.',
       voice_narration: 'Configure OpenAI, Gemini TTS, ElevenLabs with a voice ID, or Azure Speech, then rerun.',
       video_assembly: 'Run npm install to restore ffmpeg-static, or configure FFMPEG_PATH to a working binary.',
       youtube_access: 'Reconnect YouTube in npm run walkthrough and ensure the Google account owns a channel.',

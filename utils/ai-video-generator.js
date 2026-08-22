@@ -6,14 +6,18 @@ const { pathToFileURL } = require('url');
 const axios = require('axios');
 const { Logger } = require('./logger');
 const { runFFmpeg, checkFFmpeg, ffmpegInstallHint } = require('./ffmpeg');
+const { MediaGenerationService } = require('./media-generation-service');
 
 class AIVideoGenerator {
-  constructor(credentials) {
+  constructor(credentials, options = {}) {
     this.logger = new Logger('AIVideoGenerator');
+    const resolvedCredentials = credentials?.credentials || credentials || {};
+    this.db = options.db || null;
+    this.lastVideoResult = null;
     
     // Initialize AI services with graceful fallback
-    const openaiKey = credentials.openai?.apiKey || process.env.OPENAI_API_KEY;
-    const replicateKey = credentials.replicate?.apiKey || process.env.REPLICATE_API_KEY;
+    const openaiKey = resolvedCredentials.openai?.apiKey || process.env.OPENAI_API_KEY;
+    const replicateKey = resolvedCredentials.replicate?.apiKey || process.env.REPLICATE_API_TOKEN || process.env.REPLICATE_API_KEY;
     
     if (openaiKey) {
       this.openai = new OpenAI({ apiKey: openaiKey });
@@ -30,7 +34,7 @@ class AIVideoGenerator {
     }
 
     // Gemini media generation (images + native TTS) — free-tier alternative to OpenAI
-    const geminiKey = credentials.gemini?.apiKey || process.env.GEMINI_API_KEY;
+    const geminiKey = resolvedCredentials.gemini?.apiKey || process.env.GEMINI_API_KEY;
     if (geminiKey) {
       try {
         const { GoogleGenAI } = require('@google/genai');
@@ -42,12 +46,15 @@ class AIVideoGenerator {
     }
     
     // ElevenLabs configuration
-    this.elevenLabsApiKey = credentials.elevenLabs?.apiKey || process.env.ELEVENLABS_API_KEY;
-    this.elevenLabsVoiceId = credentials.elevenLabs?.voiceId || process.env.ELEVENLABS_VOICE_ID;
+    this.elevenLabsApiKey = resolvedCredentials.elevenLabs?.apiKey || process.env.ELEVENLABS_API_KEY;
+    this.elevenLabsVoiceId = resolvedCredentials.elevenLabs?.voiceId || process.env.ELEVENLABS_VOICE_ID;
     
     // Azure Speech configuration
-    this.azureSpeechKey = credentials.azure?.speechKey || process.env.AZURE_SPEECH_KEY;
-    this.azureSpeechRegion = credentials.azure?.speechRegion || process.env.AZURE_SPEECH_REGION;
+    this.azureSpeechKey = resolvedCredentials.azure?.speechKey || process.env.AZURE_SPEECH_KEY;
+    this.azureSpeechRegion = resolvedCredentials.azure?.speechRegion || process.env.AZURE_SPEECH_REGION;
+    this.mediaGeneration = options.mediaGeneration || (this.db
+      ? new MediaGenerationService(this.db, resolvedCredentials, { logger: this.logger })
+      : null);
   }
 
   async generateTTSAudio(text, outputPath) {
@@ -267,25 +274,120 @@ class AIVideoGenerator {
     });
   }
 
-  async generateVideo(script, visualAssets, audioPath, outputPath) {
+  async generateVideo(script, visualAssets, audioPath, outputPath, options = {}) {
     this.logger.info('Generating video from assets...');
-    
+    this.lastVideoResult = null;
     try {
-      // Try Replicate for video generation first
-      if (this.replicate && this.replicate.auth) {
-        return await this.generateReplicateVideo(script, visualAssets, audioPath, outputPath);
+      if (this.mediaGeneration && options.productionId) {
+        const generated = await this.mediaGeneration.generateClips({
+          jobId: options.jobId || null,
+          productionId: options.productionId,
+          script,
+          visualAssets,
+          outputDir: path.dirname(outputPath)
+        });
+        if (generated.clips.length) {
+          const produced = await this.generateHybridVideo(
+            generated.clips,
+            visualAssets,
+            audioPath,
+            outputPath,
+            options.estimatedDuration || this.calculateScriptDuration(script)
+          );
+          this.lastVideoResult = {
+            requestedProvider: generated.requestedProvider,
+            actualProvider: generated.actualProvider,
+            model: generated.model,
+            mode: generated.settings.mode,
+            generatedSeconds: generated.clips.reduce((total, clip) => total + clip.duration, 0),
+            tasks: generated.clips.map(clip => ({ scene: clip.index, taskId: clip.taskId, provider: clip.provider, model: clip.model }))
+          };
+          return produced;
+        }
       }
-      
-      // Fallback to simple slideshow with Playwright
-      return await this.generateSlideshowVideo(script, visualAssets, audioPath, outputPath);
+
+      const produced = await this.generateSlideshowVideo(script, visualAssets, audioPath, outputPath);
+      this.lastVideoResult = { requestedProvider: 'slideshow', actualProvider: 'slideshow', model: 'local-ffmpeg', mode: 'slideshow', generatedSeconds: 0, tasks: [] };
+      return produced;
     } catch (error) {
       // The Logger's console line only shows the message string, so put the real
       // reason inline. Previously the stack alone went to the file transport and
       // the console printed "Video generation failed:" with no detail.
       const reason = error && error.message ? error.message : String(error);
-      this.logger.error(`Video generation failed: ${reason}`, error);
-      return await this.simulateVideoGeneration(script, visualAssets, audioPath, outputPath);
+      this.logger.error(`Video provider generation failed; using the local slideshow: ${reason}`, error);
+      try {
+        const produced = await this.generateSlideshowVideo(script, visualAssets, audioPath, outputPath);
+        this.lastVideoResult = {
+          requestedProvider: this.lastVideoResult?.requestedProvider || 'configured-provider',
+          actualProvider: 'slideshow', model: 'local-ffmpeg', mode: 'fallback', generatedSeconds: 0,
+          fallbackReason: reason, tasks: []
+        };
+        return produced;
+      } catch (fallbackError) {
+        this.logger.error(`Local slideshow fallback failed: ${fallbackError.message}`, fallbackError);
+        const produced = await this.simulateVideoGeneration(script, visualAssets, audioPath, outputPath);
+        this.lastVideoResult = {
+          requestedProvider: 'configured-provider', actualProvider: 'simulation', model: null,
+          mode: 'simulation', generatedSeconds: 0, fallbackReason: `${reason}; ${fallbackError.message}`, tasks: []
+        };
+        return produced;
+      }
     }
+  }
+
+  async generateHybridVideo(clips, visualAssets, audioPath, outputPath, totalDuration) {
+    if (!(await checkFFmpeg())) throw new Error(ffmpegInstallHint());
+    const validImages = await this.filterLocalImageAssets(visualAssets);
+    const segments = clips.map(clip => ({ type: 'video', path: clip.path, duration: clip.duration }));
+    const generatedDuration = segments.reduce((sum, item) => sum + item.duration, 0);
+    const remaining = Math.max(0, this.parseDurationSeconds(totalDuration) - generatedDuration);
+    if (remaining && validImages.length) {
+      const perImage = Math.max(2, remaining / validImages.length);
+      for (const imagePath of validImages) segments.push({ type: 'image', path: imagePath, duration: perImage });
+    }
+    if (!segments.length) throw new Error('No usable provider clips or still images were generated');
+
+    const visualPath = outputPath.replace(/\.mp4$/i, '_hybrid_visual.mp4');
+    await this.renderMediaTimeline(segments, visualPath);
+    await this.addAudioToVideo(visualPath, audioPath, outputPath, { loopVideo: true });
+    await fs.unlink(visualPath).catch(() => {});
+    return outputPath;
+  }
+
+  async renderMediaTimeline(segments, outputPath) {
+    const args = ['-y'];
+    for (const segment of segments) {
+      if (segment.type === 'image') args.push('-loop', '1', '-t', Number(segment.duration).toFixed(2), '-framerate', '30', '-i', segment.path);
+      else args.push('-i', segment.path);
+    }
+    const filters = segments.map((segment, index) =>
+      `[${index}:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30,format=yuv420p,trim=duration=${Number(segment.duration).toFixed(2)},setpts=PTS-STARTPTS[v${index}]`
+    );
+    filters.push(`${segments.map((_, index) => `[v${index}]`).join('')}concat=n=${segments.length}:v=1:a=0[vout]`);
+    args.push('-filter_complex', filters.join(';'), '-map', '[vout]', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', outputPath);
+    await runFFmpeg(args);
+    return outputPath;
+  }
+
+  async filterLocalImageAssets(visualAssets = []) {
+    const imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.webp']);
+    const images = [];
+    for (const asset of visualAssets) {
+      if (typeof asset !== 'string' || !imageExtensions.has(path.extname(asset).toLowerCase())) continue;
+      try {
+        await fs.access(asset);
+        images.push(asset);
+      } catch (_error) { /* ignore missing assets */ }
+    }
+    return images;
+  }
+
+  parseDurationSeconds(value) {
+    if (Number.isFinite(Number(value))) return Math.max(0, Number(value));
+    const parts = String(value || '').split(':').map(Number);
+    if (parts.length === 2 && parts.every(Number.isFinite)) return Math.max(0, parts[0] * 60 + parts[1]);
+    if (parts.length === 3 && parts.every(Number.isFinite)) return Math.max(0, parts[0] * 3600 + parts[1] * 60 + parts[2]);
+    return 0;
   }
 
   async generateReplicateVideo(script, visualAssets, audioPath, outputPath) {
@@ -649,7 +751,7 @@ class AIVideoGenerator {
     return Math.max(30, Math.ceil((totalWords / 150) * 60));
   }
 
-  async addAudioToVideo(videoPath, audioPath, outputPath) {
+  async addAudioToVideo(videoPath, audioPath, outputPath, options = {}) {
     const hasRealAudio = await this.isUsableAudioFile(audioPath);
 
     if (!hasRealAudio) {
@@ -665,7 +767,8 @@ class AIVideoGenerator {
       ? outputPath.replace(/\.mp4$/i, '_muxed.mp4')
       : outputPath;
 
-    await runFFmpeg(['-y', '-i', videoPath, '-i', audioPath, '-c:v', 'copy', '-c:a', 'aac', '-shortest', muxPath]);
+    const videoInput = options.loopVideo ? ['-stream_loop', '-1', '-i', videoPath] : ['-i', videoPath];
+    await runFFmpeg(['-y', ...videoInput, '-i', audioPath, '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-shortest', muxPath]);
 
     if (muxPath !== outputPath) {
       await fs.rename(muxPath, outputPath);

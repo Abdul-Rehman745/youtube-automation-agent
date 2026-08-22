@@ -446,7 +446,8 @@ class YouTubeAutomationAgent {
             activeJobs: this.activeJobs.size,
             automationPaused: this.scheduler ? !this.scheduler.isEnabled : true,
             agents: Object.keys(this.agents),
-            autonomousRunning: Boolean(await this.db.getActiveOperatorRun())
+            autonomousRunning: Boolean(await this.db.getActiveOperatorRun()),
+            videoProviders: this.agents.production?.aiVideoGenerator?.mediaGeneration?.listProviders() || []
           }
         });
       } catch (error) {
@@ -458,6 +459,7 @@ class YouTubeAutomationAgent {
       const job = await this.db.getGenerationJob(req.params.jobId);
       if (!job) return res.status(404).json({ error: 'Job not found' });
       job.checkpoints = await this.db.listGenerationCheckpoints(job.id);
+      job.mediaTasks = await this.db.listMediaGenerationTasks(job.id);
       job.resumeFrom = this.recovery?.resumePoint(job.checkpoints);
       return res.json(job);
     });
@@ -479,7 +481,10 @@ class YouTubeAutomationAgent {
     this.app.post('/api/readiness/run', protect, async (req, res) => {
       try {
         if (!this.readiness) return res.status(503).json({ error: 'Readiness service is not initialized' });
-        const result = await this.readiness.run({ includePaidMedia: req.body?.includePaidMedia === true });
+        const result = await this.readiness.run({
+          includePaidMedia: req.body?.includePaidMedia === true,
+          includePaidVideo: req.body?.includePaidVideo === true
+        });
         return res.json({ success: true, result });
       } catch (error) {
         return res.status(error.status || 500).json({ success: false, error: error.message });
@@ -742,6 +747,27 @@ class YouTubeAutomationAgent {
       for (const key of allowed) {
         if (req.body?.[key] !== undefined) await this.db.setSetting(key, String(req.body[key]));
       }
+      const provider = req.body?.video_provider;
+      if (provider !== undefined) {
+        const supported = ['slideshow', 'auto', 'seedance', 'minimax_h3', 'google_omni', 'kling', 'wan'];
+        if (!supported.includes(provider)) return res.status(400).json({ error: 'Unsupported video provider' });
+        await this.db.setSetting('video_provider', provider);
+      }
+      const mode = req.body?.video_generation_mode;
+      if (mode !== undefined) {
+        if (!['hybrid', 'slideshow'].includes(mode)) return res.status(400).json({ error: 'Unsupported video generation mode' });
+        await this.db.setSetting('video_generation_mode', mode);
+      }
+      if (req.body?.video_clip_duration !== undefined) {
+        const value = Number(req.body.video_clip_duration);
+        if (!Number.isInteger(value) || value < 3 || value > 30) return res.status(400).json({ error: 'Clip duration must be between 3 and 30 seconds' });
+        await this.db.setSetting('video_clip_duration', String(value));
+      }
+      if (req.body?.video_max_generated_seconds !== undefined) {
+        const value = Number(req.body.video_max_generated_seconds);
+        if (!Number.isInteger(value) || value < 0 || value > 600) return res.status(400).json({ error: 'Generated seconds cap must be between 0 and 600' });
+        await this.db.setSetting('video_max_generated_seconds', String(value));
+      }
       return res.json({ success: true, result: await this.db.getAllSettings() });
     });
 
@@ -991,7 +1017,7 @@ class YouTubeAutomationAgent {
       jobId,
       'production',
       62,
-      () => this.agents.production.processContent({ strategy, script, thumbnail, seo: seoData })
+      () => this.agents.production.processContent({ strategy, script, thumbnail, seo: seoData, jobId })
     );
     this.logger.info('Production processing complete');
 

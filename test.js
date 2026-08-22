@@ -26,6 +26,7 @@ class SystemTest {
       { name: 'Autonomous Channel Operator', test: () => this.testAutonomousChannelOperator() },
       { name: 'Closed-loop Channel Learning', test: () => this.testChannelLearningLoop() },
       { name: 'Production Readiness Gate', test: () => this.testProductionReadinessGate() },
+      { name: 'Durable Multi-Provider Video Generation', test: () => this.testVideoProviderLayer() },
       { name: 'Research and Provenance Desk', test: () => this.testProvenanceDesk() },
       { name: 'Resumable Generation Checkpoints', test: () => this.testResumableGenerationCheckpoints() },
       { name: 'API Validation and Security', test: () => this.testAPIValidationAndSecurity() },
@@ -599,6 +600,7 @@ class SystemTest {
       probes: {
         text: passingProbe('Text'),
         image: passingProbe('Image'),
+        videoProvider: passingProbe('Video provider'),
         narration: passingProbe('Narration'),
         videoAssembly: passingProbe('Video'),
         youtube: passingProbe('YouTube'),
@@ -606,7 +608,7 @@ class SystemTest {
       }
     });
     const passed = await service.run({ includePaidMedia: true });
-    if (passed.status !== 'passed' || passed.checks.length !== 6 || !savedRun) {
+    if (passed.status !== 'passed' || passed.checks.length !== 7 || !savedRun) {
       throw new Error('A successful readiness run was not persisted correctly');
     }
     await service.assertReady('Test automation');
@@ -615,6 +617,7 @@ class SystemTest {
       probes: {
         text: passingProbe('Text'),
         image: passingProbe('Image'),
+        videoProvider: passingProbe('Video provider'),
         narration: passingProbe('Narration'),
         videoAssembly: passingProbe('Video'),
         youtube: async () => { throw new Error('token rejected sk-secret-value'); },
@@ -654,7 +657,7 @@ class SystemTest {
       await persistenceDb.initialize();
       await persistenceDb.saveReadinessRun(passed);
       const persisted = await persistenceDb.getLatestReadinessRun();
-      if (persisted?.id !== passed.id || persisted.checks.length !== 6 || persisted.summary.passed !== 6) {
+      if (persisted?.id !== passed.id || persisted.checks.length !== 7 || persisted.summary.passed !== 7) {
         throw new Error('Readiness evidence did not round-trip through SQLite');
       }
     } finally {
@@ -662,6 +665,141 @@ class SystemTest {
       await fs.rm(directory, { recursive: true, force: true });
     }
     this.logger.info('Production readiness gate test completed successfully');
+  }
+
+  async testVideoProviderLayer() {
+    const fs = require('fs').promises;
+    const os = require('os');
+    const { runFFmpeg, checkFFmpeg } = require('./utils/ffmpeg');
+    const { MediaGenerationService } = require('./utils/media-generation-service');
+    const {
+      VideoProvider, VideoProviderRegistry, SeedanceProvider, MiniMaxH3Provider,
+      GoogleOmniProvider, KlingProvider, WanProvider
+    } = require('./utils/video-providers');
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'yaa-media-provider-'));
+    const db = new Database();
+    db.dbPath = path.join(directory, 'media.db');
+    await db.initialize();
+    const job = await db.createGenerationJob({ topic: 'Provider durability test' });
+    const source = path.join(directory, 'source.mp4');
+    let createCalls = 0;
+    let pollCalls = 0;
+
+    try {
+      if (!(await checkFFmpeg())) {
+        this.logger.warn('Skipping provider MP4 durability assertion because FFmpeg is unavailable');
+        return;
+      }
+      await runFFmpeg(['-y', '-f', 'lavfi', '-i', 'color=c=red:s=320x180:d=1', '-c:v', 'mpeg4', source]);
+      const fake = new VideoProvider('seedance', {
+        model: 'bytedance/seedance-2.5',
+        capabilities: { minDuration: 4, maxDuration: 30, cancellation: true }
+      });
+      fake.isAvailable = () => true;
+      fake.createTask = async () => {
+        createCalls++;
+        return { externalTaskId: 'prediction-1', status: 'queued' };
+      };
+      fake.getTask = async id => {
+        pollCalls++;
+        return { externalTaskId: id, status: 'succeeded', outputUrl: 'fake://video' };
+      };
+      fake.downloadResult = async (_task, outputPath) => {
+        await fs.copyFile(source, outputPath);
+        return outputPath;
+      };
+      const registry = new VideoProviderRegistry({}, { providers: { seedance: fake } });
+      const service = new MediaGenerationService(db, {}, { registry, pollIntervalMs: 10, sleep: async () => {} });
+      const output = path.join(directory, 'output.mp4');
+      const input = {
+        jobId: job.id,
+        productionId: 'prod-provider-test',
+        scene: { index: 0 },
+        provider: fake,
+        outputPath: output,
+        request: { prompt: 'A red frame', duration: 4, resolution: '720p', aspectRatio: '16:9' }
+      };
+      const first = await service.generateClip(input);
+      const second = await service.generateClip(input);
+      const tasks = await db.listMediaGenerationTasks(job.id);
+      if (createCalls !== 1 || pollCalls !== 1 || !second.reused || tasks.length !== 1) {
+        throw new Error('A completed provider task was duplicated instead of being reused');
+      }
+      if (first.task.external_task_id !== 'prediction-1' || tasks[0].model !== 'bytedance/seedance-2.5') {
+        throw new Error('Provider task identity and model evidence did not persist');
+      }
+      const providers = registry.list();
+      for (const id of ['seedance', 'minimax_h3', 'google_omni', 'kling', 'wan', 'slideshow']) {
+        if (!providers.find(provider => provider.id === id)) throw new Error(`Missing video provider: ${id}`);
+      }
+      const shortOnly = new VideoProvider('wan', { model: 'wan-test', capabilities: { minDuration: 2, maxDuration: 15, firstFrame: true } });
+      shortOnly.isAvailable = () => true;
+      const routed = new VideoProviderRegistry({}, { providers: { seedance: fake, wan: shortOnly } });
+      if (routed.select('auto', ['wan', 'seedance'], { duration: 20 }).id !== 'seedance') {
+        throw new Error('Automatic video routing ignored the requested duration capability');
+      }
+      if (routed.select('auto', ['seedance', 'wan'], { duration: 8, generateAudio: true }).id !== 'slideshow') {
+        throw new Error('Automatic video routing selected a provider without requested native audio support');
+      }
+      const listedJob = (await db.listGenerationJobs(10)).find(item => item.id === job.id);
+      if (listedJob?.mediaTasks?.length !== 1 || listedJob.mediaTasks[0].external_task_id !== 'prediction-1') {
+        throw new Error('Generation job history did not expose its durable provider task');
+      }
+
+      let seedanceSubmission;
+      const seedance = new SeedanceProvider({}, { client: { predictions: {
+        create: async submission => {
+          seedanceSubmission = submission;
+          return { id: 'seedance-task', status: 'starting' };
+        }
+      } } });
+      const seedanceTask = await seedance.createTask({ prompt: 'Seedance scene', duration: 30, aspectRatio: '16:9' });
+      if (seedanceTask.externalTaskId !== 'seedance-task' || seedanceSubmission.model !== 'bytedance/seedance-2.5' || seedanceSubmission.input.duration !== 30) {
+        throw new Error('Seedance adapter did not submit the expected Replicate task');
+      }
+      const fileOutput = seedance.normalizeTask({ id: 'file-output', status: 'succeeded', output: { url: () => new URL('https://example.com/video.mp4') } });
+      if (fileOutput.outputUrl !== 'https://example.com/video.mp4') throw new Error('Seedance FileOutput was not normalized');
+
+      let minimaxBody;
+      const minimax = new MiniMaxH3Provider({}, { apiKey: 'test', http: {
+        post: async (_url, body) => { minimaxBody = body; return { data: { task_id: 'h3-task' } }; }
+      } });
+      const minimaxTask = await minimax.createTask({ prompt: 'H3 scene', duration: 15, resolution: '2K', aspectRatio: '9:16' });
+      if (minimaxTask.externalTaskId !== 'h3-task' || minimaxBody.model !== 'MiniMax-H3' || minimaxBody.content[0].type !== 'text') {
+        throw new Error('MiniMax H3 adapter did not submit the expected multimodal task');
+      }
+
+      let googleName;
+      const google = new GoogleOmniProvider({}, { client: {
+        interactions: { create: async () => ({ id: 'omni-task', output_video: { uri: 'https://generativelanguage.googleapis.com/v1beta/files/omni-file:download?alt=media' } }) },
+        files: { get: async ({ name }) => { googleName = name; return { state: { name: 'ACTIVE' } }; } }
+      } });
+      const googleTask = await google.createTask({ prompt: 'Omni scene', aspectRatio: '16:9' });
+      await google.getTask(googleTask.externalTaskId);
+      if (googleTask.status !== 'queued' || googleName !== 'files/omni-file') throw new Error('Gemini Omni URI task was not normalized for polling');
+
+      let klingBody;
+      const kling = new KlingProvider({}, { accessKey: 'access', secretKey: 'secret', http: {
+        post: async (_url, body) => { klingBody = body; return { data: { data: { task_id: 'kling-task' } } }; }
+      } });
+      const klingTask = await kling.createTask({ prompt: 'Kling scene', duration: 8, aspectRatio: '16:9' });
+      if (klingTask.externalTaskId !== 'kling-task' || klingBody.model_name !== 'kling-v3-omni' || klingBody.sound !== 'off') {
+        throw new Error('Kling adapter did not submit the expected task');
+      }
+
+      let wanBody;
+      const wan = new WanProvider({}, { apiKey: 'test', http: {
+        post: async (_url, body) => { wanBody = body; return { data: { output: { task_id: 'wan-task' } } }; }
+      } });
+      const wanTask = await wan.createTask({ prompt: 'Wan scene', duration: 10, resolution: '720p', aspectRatio: '16:9' });
+      if (wanTask.externalTaskId !== 'wan-task' || wanBody.model !== 'wan2.7-t2v-2026-06-12' || wanBody.parameters.resolution !== '720P') {
+        throw new Error('Wan adapter did not submit the expected task-specific model payload');
+      }
+    } finally {
+      await db.close();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+    this.logger.info('Durable multi-provider video generation test completed successfully');
   }
 
   async testProvenanceDesk() {
@@ -1376,6 +1514,9 @@ class SystemTest {
       }
 
       const generator = new AIVideoGenerator({});
+      if (generator.parseDurationSeconds('2:05') !== 125 || generator.parseDurationSeconds('1:02:03') !== 3723) {
+        throw new Error('Human-readable production durations are not converted to timeline seconds');
+      }
       const videoPath = path.join(dir, 'out.mp4');
       await generator.renderSlidesToVideo(stills, 6, videoPath);
 
@@ -1391,6 +1532,14 @@ class SystemTest {
       if (!finalStats.size) {
         throw new Error('Silent-audio fallback did not produce a video');
       }
+
+      const hybridPath = path.join(dir, 'hybrid.mp4');
+      await generator.renderMediaTimeline([
+        { type: 'video', path: videoPath, duration: 1 },
+        { type: 'image', path: stills[0], duration: 1 }
+      ], hybridPath);
+      const hybridStats = await fs.stat(hybridPath);
+      if (!hybridStats.size) throw new Error('Hybrid provider/still timeline did not produce a video');
     } finally {
       await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
     }
@@ -1421,7 +1570,7 @@ class SystemTest {
   }
 
   async testWalkthroughModule() {
-    const { SetupWalkthrough, AI_PROVIDER_GUIDE } = require('./walkthrough');
+    const { SetupWalkthrough, AI_PROVIDER_GUIDE, VIDEO_PROVIDER_GUIDE } = require('./walkthrough');
     const { PROVIDERS, GEMINI_MODELS, GEMINI_DEFAULT_MODEL } = require('./utils/ai-text-service');
 
     const walkthrough = new SetupWalkthrough();
@@ -1477,6 +1626,18 @@ class SystemTest {
     for (const id of Object.keys(PROVIDERS)) {
       if (JSON.stringify(AI_PROVIDER_GUIDE[id].models) !== JSON.stringify(PROVIDERS[id].models)) {
         throw new Error(`Walkthrough provider "${id}" models drifted from the runtime catalog`);
+      }
+    }
+
+    for (const id of ['slideshow', 'seedance', 'minimax_h3', 'google_omni', 'kling', 'wan']) {
+      const guide = VIDEO_PROVIDER_GUIDE[id];
+      if (!guide?.label) throw new Error(`Walkthrough is missing video provider "${id}"`);
+      if (id !== 'slideshow') {
+        const credentials = {};
+        guide.save(credentials, 'test-key', 'test-secret');
+        if (!Object.keys(credentials).length || !guide.keyUrl || !guide.credentialName) {
+          throw new Error(`Video provider guide "${id}" cannot save its credentials`);
+        }
       }
     }
 

@@ -23,7 +23,7 @@ See the complete release history in [CHANGELOG.md](CHANGELOG.md).
 - **Self-hosted:** your credentials, media, and channel data stay under your control.
 - **Approval-first:** nothing is scheduled until quality, rights, and human-review gates pass by default.
 - **Strategy-driven:** give the Autonomous Channel Operator an objective, audience, pillars, cadence, and guardrails; it turns them into researched content plans and production runs.
-- **Provider-flexible:** use Gemini, OpenAI, OpenRouter, Kimi, MiMo, GLM, or another OpenAI-compatible endpoint.
+- **Provider-flexible:** use Gemini, OpenAI, OpenRouter, Kimi, MiMo, GLM, or another OpenAI-compatible text endpoint, plus Seedance, MiniMax H3, Gemini Omni Flash, Kling, Wan, or local FFmpeg for video.
 - **Observable:** follow persistent generation jobs, failures, review state, publishing, and local activation milestones from the dashboard.
 
 <!-- Launch gate: add only a real 30–45 second dashboard demo captured from a verified end-to-end run. -->
@@ -47,6 +47,8 @@ Already know what you are doing? `npm run setup` offers a shorter classic flow, 
 Before activating autonomous production, open **Production readiness** in the dashboard and choose **Run verified check**. The gate makes small live text and narration requests, verifies access to the connected YouTube channel, creates and decodes a temporary MP4 containing audio and video, and validates every queued upload's metadata. It never creates or uploads a YouTube video, and temporary probe assets are deleted after the run.
 
 AI image generation can incur a larger provider charge, so its live probe is a separate opt-in checkbox. Without that checkbox, image configuration is reported as verified, skipped, or using the built-in gradient fallback without making a paid image request.
+
+AI video verification has its own **Include paid video probe** checkbox. When enabled, Lumen creates the provider's shortest supported test clip, records the external task and model, downloads and decodes the MP4, then removes the temporary asset. It never silently tries a second paid provider.
 
 Results persist locally in SQLite with exact remediation steps. A recorded blocking failure stops autonomous generation and publishing until a later run passes; manual work remains available when readiness has never been checked or the last result is older than 24 hours.
 
@@ -166,6 +168,20 @@ graph LR
 
 Additional integrations: Anthropic Claude (`claude-fable-5`), ElevenLabs (Eleven v3 TTS), Replicate (Wan 2.7 video), local models via Ollama, any OpenAI-compatible endpoint.
 
+### AI video providers
+
+Local slideshow rendering remains the default, so upgrading does not start paid video requests. Choose a provider in **Channel setup**, set a paid-seconds cap, then run the separately opted-in paid video readiness probe.
+
+| Provider | Default model | Best fit | Clip limits |
+| --- | --- | --- | --- |
+| ByteDance | `bytedance/seedance-2.5` through Replicate | Cinematic long scenes and large reference sets | 4–30 seconds |
+| MiniMax | `MiniMax-H3` | Multimodal references, native stereo audio, optional 2K | 4–15 seconds |
+| Google | `gemini-omni-flash-preview` | Fast generation and conversational editing | 3–10 seconds |
+| Kuaishou | `kling-v3-omni` | Storyboards and character/voice consistency | 3–15 seconds |
+| Alibaba | Wan 2.7 task-specific models | Efficient generation, reference video, and continuation | 2–15 seconds |
+
+Long-form productions use hybrid assembly: Lumen generates bounded provider clips for the hook and important sections, fills the remaining timeline locally, mixes the existing narration, and keeps the generated caption file alongside the production. As soon as a provider returns its task ID, Lumen persists it before polling so interrupted jobs can resume that known task instead of submitting it again.
+
 ## Configuration
 
 ### API Keys
@@ -216,7 +232,14 @@ OPENAI_API_KEY=sk-...
 # ELEVENLABS_VOICE_ID=...
 
 # Optional: AI video generation
-# REPLICATE_API_KEY=...
+# VIDEO_PROVIDER=slideshow # auto, seedance, minimax_h3, google_omni, kling, wan
+# VIDEO_GENERATION_MODE=hybrid
+# VIDEO_MAX_GENERATED_SECONDS=60
+# REPLICATE_API_TOKEN=...  # Seedance 2.5
+# MINIMAX_API_KEY=...      # MiniMax H3
+# KLING_ACCESS_KEY=...
+# KLING_SECRET_KEY=...
+# DASHSCOPE_API_KEY=...    # Wan 2.7
 
 # App config
 NODE_ENV=production

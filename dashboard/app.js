@@ -139,7 +139,7 @@ function renderDashboard() {
   renderActivation(state.activation);
   renderReadiness(state.readiness);
   renderOperator(state.channelStrategy, state.operatorRuns || [], { ...state.system, readiness: state.readiness });
-  populateSettings(state.profile, state.settings);
+  populateSettings(state.profile, state.settings, state.system.videoProviders || []);
 }
 
 function renderReadiness(readiness = {}) {
@@ -196,6 +196,9 @@ function renderJobs(jobs) {
   container.innerHTML = jobs.slice(0, 6).map(job => {
     const checkpoints = Array.isArray(job.checkpoints) ? job.checkpoints : [];
     const completed = new Set(checkpoints.filter(item => item.status === 'completed').map(item => item.stage));
+    const mediaTasks = Array.isArray(job.mediaTasks) ? job.mediaTasks : [];
+    const mediaCompleted = mediaTasks.filter(item => item.status === 'succeeded').length;
+    const mediaProviders = [...new Set(mediaTasks.map(item => label(item.provider)))].join(', ');
     const resumeFrom = stages.find(stage => !completed.has(stage)) || 'quality_review';
     const recoverable = ['failed', 'interrupted'].includes(job.status);
     return `
@@ -204,6 +207,7 @@ function renderJobs(jobs) {
         <strong>${escapeHTML(job.title || job.topic || 'Agent-selected topic')}</strong>
         <div class="meta-line">${statusChip(job.status)} · ${escapeHTML(label(job.stage))} · ${timeAgo(job.updated_at)}</div>
         ${checkpoints.length ? `<div class="checkpoint-line">${completed.size}/${stages.length} stages saved${job.details?.reusedStages?.length ? ` · ${job.details.reusedStages.length} reused` : ''}</div>` : ''}
+        ${mediaTasks.length ? `<div class="checkpoint-line">Video: ${mediaCompleted}/${mediaTasks.length} clips ready · ${escapeHTML(mediaProviders)}</div>` : ''}
         <div class="progress"><i style="width:${Math.max(0, Math.min(100, job.progress || 0))}%"></i></div>
       </div>
       ${['queued', 'running'].includes(job.status) ? `<button class="text-button" data-cancel-job="${escapeHTML(job.id)}">Cancel</button>` : ''}
@@ -424,7 +428,7 @@ function renderOperator(strategy, runs, system) {
   }).join('') : empty('Research and planning will appear here when the run begins.');
 }
 
-function populateSettings(profile = {}, settings = {}) {
+function populateSettings(profile = {}, settings = {}, providers = []) {
   const form = $('#profile-form');
   const mapping = {
     channelName: profile.channel_name,
@@ -442,6 +446,20 @@ function populateSettings(profile = {}, settings = {}) {
   }
   $('#approval-required').checked = settings.approval_required !== 'false';
   $('#notifications-enabled').checked = settings.notification_enabled !== 'false';
+  const videoMapping = {
+    videoProvider: settings.video_provider || 'slideshow',
+    videoGenerationMode: settings.video_generation_mode || 'hybrid',
+    videoClipDuration: settings.video_clip_duration || '8',
+    videoMaxGeneratedSeconds: settings.video_max_generated_seconds || '60'
+  };
+  for (const [name, value] of Object.entries(videoMapping)) {
+    if (form.elements[name] && document.activeElement !== form.elements[name]) form.elements[name].value = value;
+  }
+  const selected = providers.find(provider => provider.id === videoMapping.videoProvider);
+  $('#video-provider-status').textContent = videoMapping.videoProvider === 'auto'
+    ? `${providers.filter(provider => provider.available && provider.id !== 'slideshow').length} paid provider(s) available; local slideshow remains the final fallback.`
+    : videoMapping.videoProvider === 'slideshow' ? 'Local FFmpeg slideshow is selected; no external video credentials are required.'
+      : selected?.available ? `${label(selected.id)} is configured (${selected.model}).` : `${label(videoMapping.videoProvider)} credentials are not configured.`;
 }
 
 function switchView(view) {
@@ -794,7 +812,10 @@ $('#run-readiness-button').addEventListener('click', async event => {
   button.disabled = true;
   button.textContent = 'Running live checks…';
   try {
-    await mutate('/api/readiness/run', 'POST', { includePaidMedia: $('#paid-image-probe').checked }, 'Production readiness check completed.');
+    await mutate('/api/readiness/run', 'POST', {
+      includePaidMedia: $('#paid-image-probe').checked,
+      includePaidVideo: $('#paid-video-probe').checked
+    }, 'Production readiness check completed.');
     switchView('readiness');
   } catch (_error) { /* toast already shown */ }
   finally {
@@ -877,7 +898,11 @@ $('#profile-form').addEventListener('submit', async event => {
     await mutate('/api/settings', 'PUT', {
       approval_required: $('#approval-required').checked,
       notification_enabled: $('#notifications-enabled').checked,
-      channel_timezone: values.timezone
+      channel_timezone: values.timezone,
+      video_provider: values.videoProvider,
+      video_generation_mode: values.videoGenerationMode,
+      video_clip_duration: Number(values.videoClipDuration),
+      video_max_generated_seconds: Number(values.videoMaxGeneratedSeconds)
     }, 'Operator settings saved.');
   } catch (_error) { /* toast already shown */ }
 });
