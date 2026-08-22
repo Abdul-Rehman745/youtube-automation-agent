@@ -348,6 +348,35 @@ class Database {
         FOREIGN KEY (production_id) REFERENCES productions(id),
         FOREIGN KEY (scene_id) REFERENCES production_scenes(id)
       )`,
+      `CREATE TABLE IF NOT EXISTS shorts_clips (
+        id TEXT PRIMARY KEY,
+        production_id TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        tags TEXT NOT NULL DEFAULT '[]',
+        source_scene_ids TEXT NOT NULL DEFAULT '[]',
+        start_seconds REAL NOT NULL DEFAULT 0,
+        duration REAL NOT NULL DEFAULT 30,
+        layout TEXT NOT NULL DEFAULT 'blur',
+        rationale TEXT,
+        status TEXT NOT NULL DEFAULT 'proposed',
+        output_path TEXT,
+        captions_path TEXT,
+        publish_time TEXT,
+        privacy_status TEXT DEFAULT 'private',
+        inherited_evidence TEXT NOT NULL DEFAULT '{}',
+        rendered_at TEXT,
+        approved_at TEXT,
+        schedule_id TEXT,
+        youtube_id TEXT,
+        youtube_url TEXT,
+        error TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(production_id, position),
+        FOREIGN KEY (production_id) REFERENCES productions(id)
+      )`,
       `CREATE TABLE IF NOT EXISTS channel_profiles (
         id TEXT PRIMARY KEY,
         channel_name TEXT,
@@ -696,6 +725,7 @@ class Database {
     const provenance = await this.getContentProvenance(productionId);
     const scenes = await this.listProductionScenes(productionId);
     const sceneRevisions = scenes.length ? await this.listProductionSceneRevisions(productionId, 50) : [];
+    const shorts = await this.listShortClips(productionId);
     return {
       ...row,
       assets: JSON.parse(row.assets || '{}'),
@@ -712,7 +742,8 @@ class Database {
         summary: { sourceCount: 0, verifiedSources: 0, claimCount: 0, resolvedClaims: 0, highRiskClaims: 0, unresolvedClaims: 0 }
       },
       scenes,
-      sceneRevisions
+      sceneRevisions,
+      shorts
     };
   }
 
@@ -1077,6 +1108,88 @@ class Database {
       after: JSON.parse(row.after_state || '{}'),
       costEvidence: JSON.parse(row.cost_evidence || '{}')
     } : null;
+  }
+
+  async replaceShortClips(productionId, clips = []) {
+    await this.executeQuery('DELETE FROM shorts_clips WHERE production_id = ?', [productionId]);
+    for (const [position, clip] of clips.entries()) {
+      const id = clip.id || this.generateId('short');
+      await this.executeQuery(
+        `INSERT INTO shorts_clips (
+          id, production_id, position, title, description, tags, source_scene_ids,
+          start_seconds, duration, layout, rationale, status, output_path, captions_path,
+          publish_time, privacy_status, inherited_evidence, rendered_at, approved_at,
+          schedule_id, youtube_id, youtube_url, error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id, productionId, position, clip.title, clip.description || '', JSON.stringify(clip.tags || []),
+          JSON.stringify(clip.sourceSceneIds || []), Number(clip.startSeconds || 0), Number(clip.duration || 30),
+          clip.layout || 'blur', clip.rationale || null, clip.status || 'proposed', clip.outputPath || null,
+          clip.captionsPath || null, clip.publishTime || null, clip.privacyStatus || 'private',
+          JSON.stringify(clip.inheritedEvidence || {}), clip.renderedAt || null, clip.approvedAt || null,
+          clip.scheduleId || null, clip.youtubeId || null, clip.youtubeUrl || null, clip.error || null
+        ]
+      );
+    }
+    return this.listShortClips(productionId);
+  }
+
+  async listShortClips(productionId) {
+    const rows = await this.getAllRows(
+      'SELECT * FROM shorts_clips WHERE production_id = ? ORDER BY position, created_at',
+      [productionId]
+    );
+    return rows.map(row => this.parseShortClip(row));
+  }
+
+  async getShortClip(id) {
+    return this.parseShortClip(await this.getRow('SELECT * FROM shorts_clips WHERE id = ?', [id]));
+  }
+
+  async updateShortClip(id, changes = {}) {
+    const current = await this.getShortClip(id);
+    if (!current) return null;
+    const next = { ...current, ...changes };
+    await this.executeQuery(
+      `UPDATE shorts_clips SET
+        title = ?, description = ?, tags = ?, source_scene_ids = ?, start_seconds = ?,
+        duration = ?, layout = ?, rationale = ?, status = ?, output_path = ?, captions_path = ?,
+        publish_time = ?, privacy_status = ?, inherited_evidence = ?, rendered_at = ?, approved_at = ?,
+        schedule_id = ?, youtube_id = ?, youtube_url = ?, error = ?, updated_at = datetime('now')
+       WHERE id = ?`,
+      [
+        next.title, next.description || '', JSON.stringify(next.tags || []), JSON.stringify(next.sourceSceneIds || []),
+        Number(next.startSeconds || 0), Number(next.duration || 30), next.layout || 'blur', next.rationale || null,
+        next.status || 'proposed', next.outputPath || null, next.captionsPath || null, next.publishTime || null,
+        next.privacyStatus || 'private', JSON.stringify(next.inheritedEvidence || {}), next.renderedAt || null,
+        next.approvedAt || null, next.scheduleId || null, next.youtubeId || null, next.youtubeUrl || null,
+        next.error || null, id
+      ]
+    );
+    return this.getShortClip(id);
+  }
+
+  parseShortClip(row) {
+    if (!row) return null;
+    return {
+      ...row,
+      productionId: row.production_id,
+      position: Number(row.position),
+      tags: JSON.parse(row.tags || '[]'),
+      sourceSceneIds: JSON.parse(row.source_scene_ids || '[]'),
+      startSeconds: Number(row.start_seconds || 0),
+      duration: Number(row.duration || 0),
+      outputPath: row.output_path || null,
+      captionsPath: row.captions_path || null,
+      publishTime: row.publish_time || null,
+      privacyStatus: row.privacy_status || 'private',
+      inheritedEvidence: JSON.parse(row.inherited_evidence || '{}'),
+      renderedAt: row.rendered_at || null,
+      approvedAt: row.approved_at || null,
+      scheduleId: row.schedule_id || null,
+      youtubeId: row.youtube_id || null,
+      youtubeUrl: row.youtube_url || null
+    };
   }
 
   async markInterruptedJobs() {
@@ -1639,24 +1752,35 @@ class Database {
   }
 
   async getPublishedContentContext(youtubeId) {
-    const row = await this.getRow(
-      `SELECT sch.production_id, sch.published_at, sch.title, ps.strategy, ps.script, ps.thumbnail, ps.seo,
-              cr.editor_data
-       FROM publish_schedule sch
-       LEFT JOIN production_snapshots ps ON ps.production_id = sch.production_id
-       LEFT JOIN content_reviews cr ON cr.production_id = sch.production_id
-       WHERE sch.youtube_id = ? ORDER BY sch.published_at DESC LIMIT 1`,
+    const schedule = await this.getRow(
+      `SELECT production_id, published_at, title, metadata
+       FROM publish_schedule WHERE youtube_id = ? ORDER BY published_at DESC LIMIT 1`,
       [youtubeId]
     );
-    if (!row) return {};
+    if (!schedule) return {};
+    const metadata = JSON.parse(schedule.metadata || '{}');
+    const sourceProductionId = metadata.sourceProductionId || schedule.production_id;
+    const row = await this.getRow(
+      `SELECT ps.strategy, ps.script, ps.thumbnail, ps.seo, cr.editor_data
+       FROM production_snapshots ps
+       LEFT JOIN content_reviews cr ON cr.production_id = ps.production_id
+       WHERE ps.production_id = ?`,
+      [sourceProductionId]
+    ) || {};
     const editorData = JSON.parse(row.editor_data || '{}');
     const thumbnail = JSON.parse(row.thumbnail || '{}');
     const selectedThumbnail = editorData.packagingExperiment?.thumbnailVariants?.[editorData.selectedThumbnailVariant];
+    const isShort = metadata.contentType === 'short';
+    const strategy = JSON.parse(row.strategy || '{}');
     return {
-      productionId: row.production_id,
-      publishedAt: row.published_at,
-      title: editorData.title || row.title,
-      strategy: JSON.parse(row.strategy || '{}'),
+      productionId: sourceProductionId,
+      shortClipId: metadata.shortClipId || null,
+      contentFormat: isShort ? 'short' : 'long_form',
+      publishedAt: schedule.published_at,
+      title: isShort ? schedule.title : editorData.title || schedule.title,
+      strategy: isShort
+        ? { ...strategy, contentType: 'shorts', requestedStyle: 'shorts', requestedLengthKey: 'short' }
+        : strategy,
       script: JSON.parse(row.script || '{}'),
       thumbnail: selectedThumbnail?.concept ? { ...thumbnail, concept: selectedThumbnail.concept } : thumbnail,
       seo: JSON.parse(row.seo || '{}')

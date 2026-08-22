@@ -603,6 +603,46 @@ function renderSceneEditor(item, canReview = true) {
   </section>`;
 }
 
+function renderShortsStudio(item) {
+  if (!item.assets?.finalVideo?.path || item.assets.finalVideo.simulated) return '';
+  const clips = item.shorts || [];
+  const parentApproved = item.review_status === 'approved';
+  return `<section class="shorts-studio">
+    <div class="panel-heading shorts-heading">
+      <div><p class="eyebrow">SHORTS REPURPOSING STUDIO</p><h3>Turn one production into vertical reach</h3><p>Create local 9:16 excerpts with mobile captions. Drafts inherit the source production's evidence and still require separate approval.</p></div>
+      <button type="button" class="button secondary small" data-propose-shorts="${escapeHTML(item.id)}">${clips.length ? 'Refresh drafts' : 'Create 3 Short drafts'}</button>
+    </div>
+    <div class="shorts-evidence ${parentApproved ? 'ready' : ''}">
+      <span>${parentApproved ? '✓ Source production approved' : 'Source approval required before scheduling'}</span>
+      <span>${escapeHTML(item.provenance?.status === 'verified' ? 'Evidence verified' : item.provenance?.status === 'not_required' ? 'No factual claims declared' : 'Evidence review incomplete')}</span>
+      <span>Local render · no new provider call</span>
+    </div>
+    ${clips.length ? `<div class="shorts-grid">${clips.map(clip => {
+      const locked = ['scheduled', 'uploading', 'published', 'reconciliation_required'].includes(clip.status);
+      const rendered = Boolean(clip.assetUrls?.video);
+      return `<article class="short-card" data-short-card="${escapeHTML(clip.id)}">
+        <div class="short-preview">${rendered
+          ? `<video controls preload="metadata"><source src="${escapeHTML(clip.assetUrls.video)}" type="video/mp4"></video>`
+          : `<div class="short-placeholder"><strong>9:16</strong><span>${escapeHTML(label(clip.layout))} layout</span></div>`}</div>
+        <div class="short-editor">
+          <div class="scene-status-row">${statusChip(clip.status)}<span>${Number(clip.duration || 0).toFixed(0)}s</span><span>${escapeHTML((clip.sourceSceneLabels || []).join(' + '))}</span></div>
+          <label><span>Short title</span><input data-short-field="title" maxlength="100" value="${escapeHTML(clip.title)}" ${locked ? 'disabled' : ''}></label>
+          <label><span>Description and parent-video CTA</span><textarea data-short-field="description" rows="3" maxlength="5000" ${locked ? 'disabled' : ''}>${escapeHTML(clip.description)}</textarea></label>
+          <label><span>Tags</span><input data-short-field="tags" value="${escapeHTML((clip.tags || []).join(', '))}" ${locked ? 'disabled' : ''}></label>
+          <div class="form-grid two">
+            <label><span>Vertical layout</span><select data-short-field="layout" ${locked ? 'disabled' : ''}><option value="blur" ${clip.layout === 'blur' ? 'selected' : ''}>Blurred canvas</option><option value="crop" ${clip.layout === 'crop' ? 'selected' : ''}>Center crop</option><option value="stacked" ${clip.layout === 'stacked' ? 'selected' : ''}>Stacked focus</option></select></label>
+            <label><span>Publish time</span><input data-short-field="publishTime" type="datetime-local" value="${toLocalInput(clip.publishTime)}" ${locked ? 'disabled' : ''}></label>
+            <label><span>Privacy</span><select data-short-field="privacyStatus" ${locked ? 'disabled' : ''}><option value="private" ${clip.privacyStatus === 'private' ? 'selected' : ''}>Private</option><option value="unlisted" ${clip.privacyStatus === 'unlisted' ? 'selected' : ''}>Unlisted</option><option value="public" ${clip.privacyStatus === 'public' ? 'selected' : ''}>Public</option></select></label>
+          </div>
+          <p class="short-rationale">${escapeHTML(clip.rationale || '')}${clip.error ? `<br><span class="danger-text">${escapeHTML(clip.error)}</span>` : ''}</p>
+          ${clip.youtubeUrl ? `<a class="source-link" href="${escapeHTML(clip.youtubeUrl)}" target="_blank" rel="noopener">Open published Short ↗</a>` : ''}
+          ${!locked ? `<div class="short-actions"><button type="button" class="text-button" data-short-save>Save draft</button><button type="button" class="button secondary small" data-short-render>${rendered ? 'Render again' : 'Render 9:16'}</button><button type="button" class="button primary small" data-short-approve ${!parentApproved || clip.status !== 'rendered' ? 'disabled' : ''} title="${!parentApproved ? 'Approve the source production first' : clip.status !== 'rendered' ? 'Render this Short first' : 'Confirm and schedule this Short'}">Approve &amp; schedule</button></div>` : ''}
+        </div>
+      </article>`;
+    }).join('')}</div>` : '<p class="empty-inline">No Short drafts yet. Create three candidates from the current scene timeline without calling a paid provider.</p>'}
+  </section>`;
+}
+
 async function openContent(productionId) {
   $('#loading').classList.add('active');
   try {
@@ -637,6 +677,7 @@ async function openContent(productionId) {
           </div>
         </div>
         ${renderSceneEditor(item, canReview)}
+        ${renderShortsStudio(item)}
         ${renderProvenanceEditor(item.provenance, canReview)}
           <div class="form-grid two">
             <label><span>Publish time</span><input name="publishTime" type="datetime-local" value="${toLocalInput(publishTime)}"></label>
@@ -689,6 +730,18 @@ function sceneFormData(card) {
     prompt: card.querySelector('[data-scene-field="prompt"]').value,
     provenanceSourceIds: Array.from(card.querySelectorAll('[data-scene-source]:checked')).map(input => input.value),
     factualChange: card.querySelector('[data-scene-factual]')?.checked !== false
+  };
+}
+
+function shortFormData(card) {
+  const publishTime = card.querySelector('[data-short-field="publishTime"]')?.value;
+  return {
+    title: card.querySelector('[data-short-field="title"]')?.value,
+    description: card.querySelector('[data-short-field="description"]')?.value,
+    tags: card.querySelector('[data-short-field="tags"]')?.value,
+    layout: card.querySelector('[data-short-field="layout"]')?.value,
+    publishTime: publishTime ? new Date(publishTime).toISOString() : undefined,
+    privacyStatus: card.querySelector('[data-short-field="privacyStatus"]')?.value
   };
 }
 
@@ -836,6 +889,55 @@ document.addEventListener('click', async event => {
       ? 'Learning approved for future autonomous plans.'
       : 'Learning rejected and excluded from future plans.';
     await mutate(`/api/learning/recommendations/${encodeURIComponent(id)}/${action}`, 'POST', {}, message).catch(() => {});
+  }
+
+  const proposeShorts = event.target.closest('[data-propose-shorts]');
+  if (proposeShorts) {
+    const productionId = proposeShorts.dataset.proposeShorts;
+    const replacing = Boolean(document.querySelector('[data-short-card]'));
+    if (replacing && !confirm('Replace the current editable Short drafts? Rendered draft files will remain on disk but their manifest will be replaced.')) return;
+    try {
+      await api(`/api/content/${encodeURIComponent(productionId)}/shorts/propose`, {
+        method: 'POST', body: JSON.stringify({ count: 3, replace: replacing })
+      });
+      await refreshContentDialog(productionId, 'Three local Short drafts created from the current scene timeline.');
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+    return;
+  }
+
+  const shortAction = event.target.closest('[data-short-save], [data-short-render], [data-short-approve]');
+  if (shortAction) {
+    const card = shortAction.closest('[data-short-card]');
+    const productionId = $('#content-review-form')?.dataset.productionId;
+    const clipId = card?.dataset.shortCard;
+    if (!productionId || !clipId) return;
+    try {
+      const values = shortFormData(card);
+      await api(`/api/content/${encodeURIComponent(productionId)}/shorts/${encodeURIComponent(clipId)}`, {
+        method: 'PATCH', body: JSON.stringify(values)
+      });
+      if (shortAction.matches('[data-short-save]')) {
+        await refreshContentDialog(productionId, 'Short draft saved.');
+        return;
+      }
+      if (shortAction.matches('[data-short-render]')) {
+        await api(`/api/content/${encodeURIComponent(productionId)}/shorts/${encodeURIComponent(clipId)}/render`, {
+          method: 'POST', body: '{}'
+        });
+        await refreshContentDialog(productionId, 'Vertical Short rendered locally with mobile captions.');
+        return;
+      }
+      if (!confirm('Confirm the inherited evidence, media rights, privacy, and publish time for this Short?')) return;
+      await api(`/api/content/${encodeURIComponent(productionId)}/shorts/${encodeURIComponent(clipId)}/approve`, {
+        method: 'POST', body: JSON.stringify({ ...values, confirmed: true })
+      });
+      await refreshContentDialog(productionId, 'Short approved and added to the publishing schedule.');
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+    return;
   }
 
   const sceneButton = event.target.closest('[data-scene-save], [data-scene-narration], [data-scene-regenerate], [data-scene-lock], [data-scene-move]');

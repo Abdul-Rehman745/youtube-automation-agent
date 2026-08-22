@@ -78,7 +78,10 @@ class PublishingSchedulingAgent {
           audio: productionData.assets.audio,
           captions: productionData.assets.captions,
           privacyStatus: productionData.privacyStatus || process.env.DEFAULT_PRIVACY_STATUS || 'private',
-          containsSyntheticMedia: productionData.containsSyntheticMedia === true
+          containsSyntheticMedia: productionData.containsSyntheticMedia === true,
+          contentType: productionData.contentType || 'long_form',
+          sourceProductionId: productionData.sourceProductionId || productionData.id,
+          shortClipId: productionData.shortClipId || null
         },
         createdAt: new Date().toISOString()
       };
@@ -151,6 +154,7 @@ class PublishingSchedulingAgent {
       scheduleEntry.status = 'uploading';
       scheduleEntry.error = null;
       await this.db.updateScheduleEntry(scheduleEntry);
+      await this.syncShortStatus(scheduleEntry, 'uploading');
       
       let uploadResult;
       try {
@@ -160,12 +164,14 @@ class PublishingSchedulingAgent {
           scheduleEntry.status = 'reconciliation_required';
           scheduleEntry.error = 'Upload outcome is unknown; verify the YouTube channel before retrying';
           await this.db.updateScheduleEntry(scheduleEntry);
+          await this.syncShortStatus(scheduleEntry, 'reconciliation_required', scheduleEntry.error);
           error.code = 'UPLOAD_OUTCOME_UNKNOWN';
           error.status = 409;
         } else {
           scheduleEntry.status = 'failed';
           scheduleEntry.error = error.message;
           await this.db.updateScheduleEntry(scheduleEntry);
+          await this.syncShortStatus(scheduleEntry, 'failed', error.message);
         }
         throw error;
       }
@@ -177,6 +183,7 @@ class PublishingSchedulingAgent {
       scheduleEntry.youtubeUrl = `https://www.youtube.com/watch?v=${uploadResult.id}`;
       
       await this.db.updateScheduleEntry(scheduleEntry);
+      await this.syncShortStatus(scheduleEntry, 'published');
       
       // Remove from queue
       this.publishQueue = this.publishQueue.filter(entry => entry.productionId !== scheduleEntry.productionId);
@@ -271,6 +278,7 @@ class PublishingSchedulingAgent {
       scheduleEntry.status = 'reconciliation_required';
       scheduleEntry.error = 'The recorded YouTube video ID could not be verified';
       await this.db.updateScheduleEntry(scheduleEntry);
+      await this.syncShortStatus(scheduleEntry, 'reconciliation_required', scheduleEntry.error);
       const error = new Error('The recorded upload could not be verified on YouTube. Resolve it before attempting another upload.');
       error.status = 409;
       error.code = 'UPLOAD_OUTCOME_UNKNOWN';
@@ -281,9 +289,22 @@ class PublishingSchedulingAgent {
     scheduleEntry.youtubeUrl = scheduleEntry.youtubeUrl || `https://www.youtube.com/watch?v=${scheduleEntry.youtubeId}`;
     scheduleEntry.error = null;
     await this.db.updateScheduleEntry(scheduleEntry);
+    await this.syncShortStatus(scheduleEntry, 'published');
     this.publishQueue = this.publishQueue.filter(entry => entry.productionId !== scheduleEntry.productionId);
     this.logger.success(`Reconciled existing YouTube upload: ${scheduleEntry.youtubeUrl}`);
     return scheduleEntry;
+  }
+
+  async syncShortStatus(scheduleEntry, status, error = null) {
+    const clipId = scheduleEntry.metadata?.shortClipId;
+    if (!clipId || !this.db.updateShortClip) return null;
+    return this.db.updateShortClip(clipId, {
+      status,
+      scheduleId: scheduleEntry.id,
+      youtubeId: scheduleEntry.youtubeId || null,
+      youtubeUrl: scheduleEntry.youtubeUrl || null,
+      error
+    });
   }
 
   async getVideoStream(videoPath) {

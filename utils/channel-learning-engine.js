@@ -10,11 +10,11 @@ class ChannelLearningEngine {
   async capture(performanceReport, context = {}, measurementWindow = 'rolling') {
     const metrics = this.normalizeMetrics(performanceReport);
     const attributes = this.extractAttributes(performanceReport, context);
-    const prior = await this.db.listPerformanceSnapshots({
+    const prior = (await this.db.listPerformanceSnapshots({
       measurementWindow,
       reliableOnly: true,
       excludeVideoId: performanceReport.videoId
-    });
+    })).filter(snapshot => (snapshot.contentAttributes?.surface || 'long_form') === attributes.surface);
     const baseline = this.calculateBaseline(prior);
     const simulated = Boolean(performanceReport.analytics?.simulated);
     const confidence = simulated ? 'unverified' : this.confidenceFor(metrics);
@@ -65,7 +65,10 @@ class ChannelLearningEngine {
     const hook = this.text(script.hook || script.introduction || '');
     return {
       topic: strategy.topic || '',
-      format: this.slug(strategy.requestedStyle || strategy.contentType || 'unknown'),
+      surface: context.contentFormat === 'short' ? 'shorts' : 'long_form',
+      format: context.contentFormat === 'short'
+        ? 'shorts'
+        : this.slug(strategy.requestedStyle || strategy.contentType || 'unknown'),
       length: this.slug(strategy.requestedLengthKey || strategy.requestedLength || 'unknown'),
       hookLength: hook ? (this.wordCount(hook) <= 40 ? 'concise' : 'extended') : 'unknown',
       titleLength: title ? (this.wordCount(title) <= 9 ? 'concise' : 'long') : 'unknown',

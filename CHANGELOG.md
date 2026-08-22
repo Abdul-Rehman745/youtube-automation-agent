@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added a persistent Shorts Repurposing Studio that proposes source-scene-backed vertical excerpts from an existing production without new provider calls
+- Added local 9:16 FFmpeg rendering with blurred-canvas, center-crop, and stacked-focus layouts plus mobile-safe burned captions and SRT output
+- Added independent Short review, evidence inheritance, scheduling, publishing-state reconciliation, and Shorts-specific analytics context
 - Made narration fail-closed across production assembly, quality review, scheduling, and publishing; missing TTS can no longer silently become an approvable video
 - Added narration-only scene recovery with persistent provider, model, task, generation-time, cost, and failure evidence
 - Added a reasoned, reversible intentional-silence override and scene-aware silent-segment mixing for explicitly silent productions

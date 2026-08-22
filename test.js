@@ -29,6 +29,7 @@ class SystemTest {
       { name: 'Durable Multi-Provider Video Generation', test: () => this.testVideoProviderLayer() },
       { name: 'Scene Repair Studio', test: () => this.testSceneRepairStudio() },
       { name: 'Narration Reliability and Recovery', test: () => this.testNarrationReliability() },
+      { name: 'Shorts Repurposing Studio', test: () => this.testShortsRepurposingStudio() },
       { name: 'Research and Provenance Desk', test: () => this.testProvenanceDesk() },
       { name: 'Resumable Generation Checkpoints', test: () => this.testResumableGenerationCheckpoints() },
       { name: 'API Validation and Security', test: () => this.testAPIValidationAndSecurity() },
@@ -1100,6 +1101,118 @@ class SystemTest {
       await fs.rm(directory, { recursive: true, force: true });
     }
     this.logger.info('Narration reliability and recovery test completed successfully');
+  }
+
+  async testShortsRepurposingStudio() {
+    const fs = require('fs').promises;
+    const os = require('os');
+    const { runFFmpeg } = require('./utils/ffmpeg');
+    const { ShortsRepurposingService } = require('./utils/shorts-repurposing-service');
+    const { PublishingSchedulingAgent } = require('./agents/publishing-scheduling-agent');
+    const { ChannelLearningEngine } = require('./utils/channel-learning-engine');
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'yaa-shorts-'));
+    const db = new Database();
+    db.dbPath = path.join(directory, 'shorts.db');
+    await db.initialize();
+
+    try {
+      const productionId = 'prod-shorts-studio';
+      const sourceVideo = path.join(directory, 'source.mp4');
+      const audioPath = path.join(directory, 'narration.m4a');
+      const thumbnailPath = path.join(directory, 'thumbnail.jpg');
+      await runFFmpeg([
+        '-y', '-f', 'lavfi', '-i', 'color=c=#203a5f:s=640x360:r=24:d=4',
+        '-f', 'lavfi', '-i', 'sine=frequency=440:duration=4',
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', sourceVideo
+      ]);
+      await fs.writeFile(audioPath, Buffer.from('narration evidence'));
+      await fs.writeFile(thumbnailPath, Buffer.from('thumbnail evidence'));
+      const production = {
+        id: productionId, status: 'scheduled',
+        strategy: { topic: 'Repurpose one production', contentType: 'tutorial' },
+        script: { title: 'Repurpose one production', fullScript: 'A complete source script for producing several useful vertical excerpts from one approved production.'.repeat(4) },
+        seo: {
+          title: 'Repurpose one production',
+          description: 'A detailed source description for a safe and efficient vertical repurposing workflow.',
+          tags: ['repurposing', 'shorts', 'workflow']
+        },
+        assets: {
+          finalVideo: { path: sourceVideo, simulated: false, duration: 4 },
+          audio: { path: audioPath, status: 'ready', simulated: false, provider: 'fixture-tts' },
+          thumbnail: { path: thumbnailPath }
+        },
+        timeline: {}, priority: 50,
+        scheduledPublishTime: new Date(Date.now() + 86400000).toISOString()
+      };
+      await db.saveProductionData(production);
+      await db.saveProductionSnapshot(production);
+      await db.saveContentReview(productionId, {
+        status: 'approved', editorData: { factChecked: true, rightsConfirmed: true },
+        qualityChecks: [], reviewedAt: new Date().toISOString()
+      });
+      await db.saveContentProvenance(productionId, {
+        sources: [], claims: [], containsSyntheticMedia: true, status: 'not_required',
+        summary: { sourceCount: 0, verifiedSources: 0, claimCount: 0, resolvedClaims: 0, highRiskClaims: 0, unresolvedClaims: 0 }
+      });
+      await db.replaceProductionScenes(productionId, [
+        { id: 'short-source-1', label: 'Hook', scriptText: 'One strong idea can reach more than one audience.', prompt: 'Opening', duration: 1.4, assetType: 'video', assetPath: sourceVideo, audioPath, status: 'ready', narrationStatus: 'current', rightsConfirmed: true },
+        { id: 'short-source-2', label: 'Method', scriptText: 'Use the approved scene evidence to build a vertical excerpt.', prompt: 'Method', duration: 1.3, assetType: 'video', assetPath: sourceVideo, audioPath, status: 'ready', narrationStatus: 'current', rightsConfirmed: true },
+        { id: 'short-source-3', label: 'Result', scriptText: 'Render locally and review every Short before it reaches the schedule.', prompt: 'Result', duration: 1.3, assetType: 'video', assetPath: sourceVideo, audioPath, status: 'ready', narrationStatus: 'current', rightsConfirmed: true }
+      ]);
+
+      const publishing = new PublishingSchedulingAgent(db, {});
+      const service = new ShortsRepurposingService(db, publishing, {
+        dataRoot: path.join(directory, 'shorts'), width: 360, height: 640, logger: this.logger
+      });
+      const proposed = await service.propose(productionId, { count: 3 });
+      if (proposed.length !== 3 || proposed.some(clip => !clip.sourceSceneIds.length || clip.status !== 'proposed')) {
+        throw new Error('Short drafts did not preserve source-scene identity');
+      }
+      const edited = await service.update(productionId, proposed[0].id, {
+        title: 'One approved video, three vertical moments', layout: 'blur',
+        tags: ['Shorts', 'repurposing', 'workflow']
+      });
+      if (edited.title.length > 100 || edited.layout !== 'blur') throw new Error('Short draft edits did not persist');
+      const rendered = await service.render(productionId, edited.id);
+      if (rendered.status !== 'rendered' || !rendered.outputPath || !rendered.captionsPath) {
+        throw new Error('Local vertical rendering did not persist its MP4 and captions');
+      }
+      await runFFmpeg(['-v', 'error', '-i', rendered.outputPath, '-f', 'null', '-']);
+
+      let approvalBlocked = false;
+      try {
+        await service.approve(productionId, rendered.id, {});
+      } catch (error) {
+        approvalBlocked = error.code === 'SHORT_APPROVAL_REQUIRED';
+      }
+      if (!approvalBlocked) throw new Error('Short scheduling bypassed explicit approval confirmation');
+      const scheduled = await service.approve(productionId, rendered.id, {
+        confirmed: true, publishTime: new Date(Date.now() + 172800000).toISOString(), privacyStatus: 'private'
+      });
+      const schedule = await db.getLatestScheduleEntry(rendered.id);
+      if (
+        scheduled.status !== 'scheduled' || !schedule || schedule.metadata.contentType !== 'short' ||
+        schedule.metadata.sourceProductionId !== productionId || schedule.metadata.containsSyntheticMedia !== true
+      ) {
+        throw new Error('Approved Short did not inherit evidence into an independent schedule entry');
+      }
+      schedule.status = 'published';
+      schedule.youtubeId = 'youtube-short-1';
+      schedule.youtubeUrl = 'https://www.youtube.com/shorts/youtube-short-1';
+      schedule.publishedAt = new Date().toISOString();
+      await db.updateScheduleEntry(schedule);
+      await publishing.syncShortStatus(schedule, 'published');
+      const published = await db.getShortClip(rendered.id);
+      const context = await db.getPublishedContentContext('youtube-short-1');
+      const attributes = new ChannelLearningEngine(db).extractAttributes({ videoDetails: { title: published.title } }, context);
+      if (published.status !== 'published' || context.contentFormat !== 'short' || attributes.surface !== 'shorts' || attributes.format !== 'shorts') {
+        throw new Error('Published Short did not remain separate in analytics learning context');
+      }
+    } finally {
+      await db.close();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+    this.logger.info('Shorts Repurposing Studio test completed successfully');
   }
 
   async testProvenanceDesk() {

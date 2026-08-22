@@ -22,6 +22,7 @@ const { ProductionReadinessService } = require('./utils/production-readiness-ser
 const { GenerationRecoveryService, GENERATION_STAGES } = require('./utils/generation-recovery-service');
 const { ProvenanceService } = require('./utils/provenance-service');
 const { SceneRepairService } = require('./utils/scene-repair-service');
+const { ShortsRepurposingService } = require('./utils/shorts-repurposing-service');
 const { version } = require('./package.json');
 const chalk = require('chalk');
 
@@ -42,6 +43,7 @@ class YouTubeAutomationAgent {
     this.recovery = null;
     this.provenance = null;
     this.scenes = null;
+    this.shorts = null;
     this.setupRequired = false;
   }
 
@@ -98,6 +100,7 @@ class YouTubeAutomationAgent {
         this.agents.production?.aiVideoGenerator,
         { logger: this.logger }
       );
+      this.shorts = new ShortsRepurposingService(this.db, this.agents.publishing, { logger: this.logger });
 
       // Show which pipeline stages will run for real vs. be simulated
       const capabilities = await this.logCapabilitySummary();
@@ -399,7 +402,8 @@ class YouTubeAutomationAgent {
         if (!this.agents.publishing) return res.status(503).json({ success: false, error: 'YouTube publishing is not configured' });
         const { contentId } = req.params;
         const bundle = await this.db.getProductionBundle(contentId);
-        if (!bundle || bundle.review_status !== 'approved') {
+        const short = bundle ? null : await this.db.getShortClip(contentId);
+        if ((!bundle || bundle.review_status !== 'approved') && (!short || !['scheduled', 'uploading', 'reconciliation_required'].includes(short.status))) {
           return res.status(409).json({ success: false, error: 'Content must pass review and be approved before publishing' });
         }
         const result = await this.agents.publishing.publishContent(contentId);
@@ -563,6 +567,62 @@ class YouTubeAutomationAgent {
         } });
       } catch (error) {
         return res.status(error.status || 400).json({ success: false, error: error.message, code: error.code, details: error.details });
+      }
+    });
+
+    this.app.post('/api/content/:productionId/shorts/propose', protect, async (req, res) => {
+      try {
+        if (!this.shorts) return res.status(503).json({ error: 'Shorts repurposing requires completed setup' });
+        const result = await this.shorts.propose(req.params.productionId, req.body || {});
+        return res.json({ success: true, result });
+      } catch (error) {
+        return res.status(error.status || 400).json({ success: false, error: error.message, code: error.code });
+      }
+    });
+
+    this.app.patch('/api/content/:productionId/shorts/:clipId', protect, async (req, res) => {
+      try {
+        if (!this.shorts) return res.status(503).json({ error: 'Shorts repurposing requires completed setup' });
+        const result = await this.shorts.update(req.params.productionId, req.params.clipId, req.body || {});
+        return res.json({ success: true, result });
+      } catch (error) {
+        return res.status(error.status || 400).json({ success: false, error: error.message, code: error.code });
+      }
+    });
+
+    this.app.post('/api/content/:productionId/shorts/:clipId/render', protect, async (req, res) => {
+      try {
+        if (!this.shorts) return res.status(503).json({ error: 'Shorts repurposing requires completed setup' });
+        const result = await this.shorts.render(req.params.productionId, req.params.clipId);
+        return res.status(202).json({ success: true, result });
+      } catch (error) {
+        return res.status(error.status || 400).json({ success: false, error: error.message, code: error.code });
+      }
+    });
+
+    this.app.post('/api/content/:productionId/shorts/:clipId/approve', protect, async (req, res) => {
+      try {
+        if (!this.shorts) return res.status(503).json({ error: 'Shorts repurposing requires completed setup' });
+        const result = await this.shorts.approve(req.params.productionId, req.params.clipId, req.body || {});
+        return res.json({ success: true, result });
+      } catch (error) {
+        return res.status(error.status || 400).json({ success: false, error: error.message, code: error.code });
+      }
+    });
+
+    this.app.get('/api/content/:productionId/shorts/:clipId/asset/:kind', async (req, res) => {
+      try {
+        const clip = await this.db.getShortClip(req.params.clipId);
+        if (!clip || clip.productionId !== req.params.productionId) return res.status(404).json({ error: 'Short asset not found' });
+        const filePath = req.params.kind === 'video' ? clip.outputPath : req.params.kind === 'captions' ? clip.captionsPath : null;
+        if (!filePath) return res.status(404).json({ error: 'Short asset not found' });
+        const resolved = path.resolve(filePath);
+        const shortsRoot = path.resolve(__dirname, 'data', 'shorts');
+        if (!resolved.startsWith(`${shortsRoot}${path.sep}`)) return res.status(403).json({ error: 'Short asset path is not allowed' });
+        await fs.access(resolved);
+        return res.sendFile(resolved);
+      } catch (_error) {
+        return res.status(404).json({ error: 'Short asset not found' });
       }
     });
 
@@ -1320,11 +1380,20 @@ class YouTubeAutomationAgent {
 
   decorateContentBundle(bundle) {
     const experiment = bundle.editorData?.packagingExperiment;
+    const sceneLabels = new Map((bundle.scenes || []).map(scene => [scene.id, scene.label]));
     return {
       ...bundle,
       scenes: (bundle.scenes || []).map(scene => this.scenes
         ? this.scenes.decorateScene(scene, bundle.id)
         : scene),
+      shorts: (bundle.shorts || []).map(clip => ({
+        ...clip,
+        sourceSceneLabels: clip.sourceSceneIds.map(id => sceneLabels.get(id)).filter(Boolean),
+        assetUrls: {
+          video: clip.outputPath ? `/api/content/${bundle.id}/shorts/${clip.id}/asset/video` : null,
+          captions: clip.captionsPath ? `/api/content/${bundle.id}/shorts/${clip.id}/asset/captions` : null
+        }
+      })),
       assetUrls: {
         video: bundle.assets?.finalVideo?.path && !bundle.assets?.finalVideo?.simulated ? `/api/content/${bundle.id}/asset/video` : null,
         thumbnail: bundle.assets?.thumbnail?.path ? `/api/content/${bundle.id}/asset/thumbnail` : null,
