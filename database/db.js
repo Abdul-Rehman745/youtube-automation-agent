@@ -298,6 +298,50 @@ class Database {
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (production_id) REFERENCES productions(id)
       )`,
+      `CREATE TABLE IF NOT EXISTS production_scenes (
+        id TEXT PRIMARY KEY,
+        production_id TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        label TEXT NOT NULL,
+        script_text TEXT NOT NULL DEFAULT '',
+        prompt TEXT NOT NULL DEFAULT '',
+        duration REAL NOT NULL DEFAULT 5,
+        asset_type TEXT DEFAULT 'missing',
+        asset_origin TEXT DEFAULT 'generated',
+        asset_path TEXT,
+        audio_path TEXT,
+        provider TEXT,
+        model TEXT,
+        external_task_id TEXT,
+        status TEXT DEFAULT 'ready',
+        narration_status TEXT DEFAULT 'current',
+        revision INTEGER DEFAULT 1,
+        locked INTEGER DEFAULT 0,
+        rights_confirmed INTEGER DEFAULT 0,
+        provenance_source_ids TEXT NOT NULL DEFAULT '[]',
+        contains_synthetic_media INTEGER DEFAULT 0,
+        estimated_cost TEXT NOT NULL DEFAULT '{}',
+        actual_cost TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(production_id, position),
+        FOREIGN KEY (production_id) REFERENCES productions(id)
+      )`,
+      `CREATE TABLE IF NOT EXISTS production_scene_revisions (
+        id TEXT PRIMARY KEY,
+        production_id TEXT NOT NULL,
+        scene_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        status TEXT DEFAULT 'completed',
+        before_state TEXT NOT NULL DEFAULT '{}',
+        after_state TEXT NOT NULL DEFAULT '{}',
+        cost_evidence TEXT NOT NULL DEFAULT '{}',
+        error TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        completed_at TEXT,
+        FOREIGN KEY (production_id) REFERENCES productions(id),
+        FOREIGN KEY (scene_id) REFERENCES production_scenes(id)
+      )`,
       `CREATE TABLE IF NOT EXISTS channel_profiles (
         id TEXT PRIMARY KEY,
         channel_name TEXT,
@@ -624,6 +668,8 @@ class Database {
       [productionId]
     );
     const provenance = await this.getContentProvenance(productionId);
+    const scenes = await this.listProductionScenes(productionId);
+    const sceneRevisions = scenes.length ? await this.listProductionSceneRevisions(productionId, 50) : [];
     return {
       ...row,
       assets: JSON.parse(row.assets || '{}'),
@@ -638,7 +684,9 @@ class Database {
       provenance: provenance || {
         sources: [], claims: [], containsSyntheticMedia: false, status: 'not_required',
         summary: { sourceCount: 0, verifiedSources: 0, claimCount: 0, resolvedClaims: 0, highRiskClaims: 0, unresolvedClaims: 0 }
-      }
+      },
+      scenes,
+      sceneRevisions
     };
   }
 
@@ -840,6 +888,154 @@ class Database {
       ...row,
       request: JSON.parse(row.request || '{}'),
       providerData: JSON.parse(row.provider_data || '{}')
+    } : null;
+  }
+
+  async replaceProductionScenes(productionId, scenes = []) {
+    await this.executeQuery('DELETE FROM production_scenes WHERE production_id = ?', [productionId]);
+    for (const [position, scene] of scenes.entries()) {
+      const id = scene.id || this.generateId('scene');
+      await this.executeQuery(
+        `INSERT INTO production_scenes (
+          id, production_id, position, label, script_text, prompt, duration,
+          asset_type, asset_origin, asset_path, audio_path, provider, model,
+          external_task_id, status, narration_status, revision, locked,
+          rights_confirmed, provenance_source_ids, contains_synthetic_media,
+          estimated_cost, actual_cost
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id, productionId, position, scene.label, scene.scriptText || '', scene.prompt || '', scene.duration,
+          scene.assetType || 'missing', scene.assetOrigin || 'generated', scene.assetPath || null,
+          scene.audioPath || null, scene.provider || null, scene.model || null, scene.externalTaskId || null,
+          scene.status || 'ready', scene.narrationStatus || 'current', scene.revision || 1,
+          scene.locked ? 1 : 0, scene.rightsConfirmed ? 1 : 0,
+          JSON.stringify(scene.provenanceSourceIds || []), scene.containsSyntheticMedia ? 1 : 0,
+          JSON.stringify(scene.estimatedCost || {}), JSON.stringify(scene.actualCost || {})
+        ]
+      );
+    }
+    return this.listProductionScenes(productionId);
+  }
+
+  async listProductionScenes(productionId) {
+    const rows = await this.getAllRows(
+      'SELECT * FROM production_scenes WHERE production_id = ? ORDER BY position, created_at',
+      [productionId]
+    );
+    return rows.map(row => this.parseProductionScene(row));
+  }
+
+  async getProductionScene(productionId, sceneId) {
+    return this.parseProductionScene(await this.getRow(
+      'SELECT * FROM production_scenes WHERE production_id = ? AND id = ?',
+      [productionId, sceneId]
+    ));
+  }
+
+  async updateProductionScene(productionId, sceneId, changes = {}) {
+    const current = await this.getProductionScene(productionId, sceneId);
+    if (!current) return null;
+    const next = { ...current, ...changes };
+    await this.executeQuery(
+      `UPDATE production_scenes SET
+        position = ?, label = ?, script_text = ?, prompt = ?, duration = ?,
+        asset_type = ?, asset_origin = ?, asset_path = ?, audio_path = ?, provider = ?,
+        model = ?, external_task_id = ?, status = ?, narration_status = ?, revision = ?,
+        locked = ?, rights_confirmed = ?, provenance_source_ids = ?,
+        contains_synthetic_media = ?, estimated_cost = ?, actual_cost = ?,
+        updated_at = datetime('now')
+       WHERE production_id = ? AND id = ?`,
+      [
+        next.position, next.label, next.scriptText || '', next.prompt || '', next.duration,
+        next.assetType || 'missing', next.assetOrigin || 'generated', next.assetPath || null,
+        next.audioPath || null, next.provider || null, next.model || null, next.externalTaskId || null,
+        next.status || 'ready', next.narrationStatus || 'current', next.revision || 1,
+        next.locked ? 1 : 0, next.rightsConfirmed ? 1 : 0,
+        JSON.stringify(next.provenanceSourceIds || []), next.containsSyntheticMedia ? 1 : 0,
+        JSON.stringify(next.estimatedCost || {}), JSON.stringify(next.actualCost || {}),
+        productionId, sceneId
+      ]
+    );
+    return this.getProductionScene(productionId, sceneId);
+  }
+
+  async reorderProductionScenes(productionId, orderedIds = []) {
+    const scenes = await this.listProductionScenes(productionId);
+    if (orderedIds.length !== scenes.length || new Set(orderedIds).size !== scenes.length ||
+      scenes.some(scene => !orderedIds.includes(scene.id))) {
+      throw new Error('Scene order must contain every scene exactly once');
+    }
+    // Move through temporary negative positions to preserve the unique constraint.
+    for (const scene of scenes) {
+      await this.executeQuery('UPDATE production_scenes SET position = ? WHERE id = ?', [-(scene.position + 1), scene.id]);
+    }
+    for (const [position, sceneId] of orderedIds.entries()) {
+      await this.executeQuery(
+        `UPDATE production_scenes SET position = ?, status = 'needs_rebuild', updated_at = datetime('now') WHERE id = ?`,
+        [position, sceneId]
+      );
+    }
+    return this.listProductionScenes(productionId);
+  }
+
+  async saveProductionSceneRevision(input = {}) {
+    const id = this.generateId('scene_revision');
+    await this.executeQuery(
+      `INSERT INTO production_scene_revisions (
+        id, production_id, scene_id, action, status, before_state, after_state,
+        cost_evidence, error, completed_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id, input.productionId, input.sceneId, input.action, input.status || 'completed',
+        JSON.stringify(input.before || {}), JSON.stringify(input.after || {}),
+        JSON.stringify(input.costEvidence || {}), input.error || null,
+        input.completedAt || new Date().toISOString()
+      ]
+    );
+    return this.getProductionSceneRevision(id);
+  }
+
+  async getProductionSceneRevision(id) {
+    return this.parseProductionSceneRevision(await this.getRow('SELECT * FROM production_scene_revisions WHERE id = ?', [id]));
+  }
+
+  async listProductionSceneRevisions(productionId, limit = 100) {
+    const rows = await this.getAllRows(
+      'SELECT * FROM production_scene_revisions WHERE production_id = ? ORDER BY created_at DESC LIMIT ?',
+      [productionId, limit]
+    );
+    return rows.map(row => this.parseProductionSceneRevision(row));
+  }
+
+  parseProductionScene(row) {
+    if (!row) return null;
+    return {
+      ...row,
+      position: Number(row.position),
+      duration: Number(row.duration),
+      scriptText: row.script_text || '',
+      assetType: row.asset_type || 'missing',
+      assetOrigin: row.asset_origin || 'generated',
+      assetPath: row.asset_path || null,
+      audioPath: row.audio_path || null,
+      externalTaskId: row.external_task_id || null,
+      narrationStatus: row.narration_status || 'current',
+      revision: Number(row.revision || 1),
+      locked: Boolean(row.locked),
+      rightsConfirmed: Boolean(row.rights_confirmed),
+      provenanceSourceIds: JSON.parse(row.provenance_source_ids || '[]'),
+      containsSyntheticMedia: Boolean(row.contains_synthetic_media),
+      estimatedCost: JSON.parse(row.estimated_cost || '{}'),
+      actualCost: JSON.parse(row.actual_cost || '{}')
+    };
+  }
+
+  parseProductionSceneRevision(row) {
+    return row ? {
+      ...row,
+      before: JSON.parse(row.before_state || '{}'),
+      after: JSON.parse(row.after_state || '{}'),
+      costEvidence: JSON.parse(row.cost_evidence || '{}')
     } : null;
   }
 

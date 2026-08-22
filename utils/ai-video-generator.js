@@ -300,14 +300,18 @@ class AIVideoGenerator {
             model: generated.model,
             mode: generated.settings.mode,
             generatedSeconds: generated.clips.reduce((total, clip) => total + clip.duration, 0),
-            tasks: generated.clips.map(clip => ({ scene: clip.index, taskId: clip.taskId, provider: clip.provider, model: clip.model }))
+            tasks: generated.clips.map(clip => ({ scene: clip.index, taskId: clip.taskId, provider: clip.provider, model: clip.model })),
+            scenes: generated.clips.map(clip => ({
+              index: clip.index, label: clip.label, prompt: clip.prompt, duration: clip.duration,
+              path: clip.path, taskId: clip.taskId, provider: clip.provider, model: clip.model
+            }))
           };
           return produced;
         }
       }
 
       const produced = await this.generateSlideshowVideo(script, visualAssets, audioPath, outputPath);
-      this.lastVideoResult = { requestedProvider: 'slideshow', actualProvider: 'slideshow', model: 'local-ffmpeg', mode: 'slideshow', generatedSeconds: 0, tasks: [] };
+      this.lastVideoResult = { requestedProvider: 'slideshow', actualProvider: 'slideshow', model: 'local-ffmpeg', mode: 'slideshow', generatedSeconds: 0, tasks: [], scenes: [] };
       return produced;
     } catch (error) {
       // The Logger's console line only shows the message string, so put the real
@@ -320,7 +324,7 @@ class AIVideoGenerator {
         this.lastVideoResult = {
           requestedProvider: this.lastVideoResult?.requestedProvider || 'configured-provider',
           actualProvider: 'slideshow', model: 'local-ffmpeg', mode: 'fallback', generatedSeconds: 0,
-          fallbackReason: reason, tasks: []
+          fallbackReason: reason, tasks: [], scenes: []
         };
         return produced;
       } catch (fallbackError) {
@@ -328,7 +332,7 @@ class AIVideoGenerator {
         const produced = await this.simulateVideoGeneration(script, visualAssets, audioPath, outputPath);
         this.lastVideoResult = {
           requestedProvider: 'configured-provider', actualProvider: 'simulation', model: null,
-          mode: 'simulation', generatedSeconds: 0, fallbackReason: `${reason}; ${fallbackError.message}`, tasks: []
+          mode: 'simulation', generatedSeconds: 0, fallbackReason: `${reason}; ${fallbackError.message}`, tasks: [], scenes: []
         };
         return produced;
       }
@@ -358,7 +362,7 @@ class AIVideoGenerator {
     const args = ['-y'];
     for (const segment of segments) {
       if (segment.type === 'image') args.push('-loop', '1', '-t', Number(segment.duration).toFixed(2), '-framerate', '30', '-i', segment.path);
-      else args.push('-i', segment.path);
+      else args.push('-stream_loop', '-1', '-i', segment.path);
     }
     const filters = segments.map((segment, index) =>
       `[${index}:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30,format=yuv420p,trim=duration=${Number(segment.duration).toFixed(2)},setpts=PTS-STARTPTS[v${index}]`

@@ -27,6 +27,7 @@ class SystemTest {
       { name: 'Closed-loop Channel Learning', test: () => this.testChannelLearningLoop() },
       { name: 'Production Readiness Gate', test: () => this.testProductionReadinessGate() },
       { name: 'Durable Multi-Provider Video Generation', test: () => this.testVideoProviderLayer() },
+      { name: 'Scene Repair Studio', test: () => this.testSceneRepairStudio() },
       { name: 'Research and Provenance Desk', test: () => this.testProvenanceDesk() },
       { name: 'Resumable Generation Checkpoints', test: () => this.testResumableGenerationCheckpoints() },
       { name: 'API Validation and Security', test: () => this.testAPIValidationAndSecurity() },
@@ -800,6 +801,155 @@ class SystemTest {
       await fs.rm(directory, { recursive: true, force: true });
     }
     this.logger.info('Durable multi-provider video generation test completed successfully');
+  }
+
+  async testSceneRepairStudio() {
+    const fs = require('fs').promises;
+    const os = require('os');
+    const sharp = require('sharp');
+    const { SceneRepairService, buildInitialSceneManifest } = require('./utils/scene-repair-service');
+    const { OperatorService } = require('./utils/operator-service');
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'yaa-scene-repair-'));
+    const db = new Database();
+    db.dbPath = path.join(directory, 'scenes.db');
+    await db.initialize();
+
+    try {
+      const imagePath = path.join(directory, 'scene.png');
+      const oldVideoPath = path.join(directory, 'old.mp4');
+      await sharp({ create: { width: 320, height: 180, channels: 3, background: '#203a5f' } }).png().toFile(imagePath);
+      await fs.writeFile(oldVideoPath, Buffer.from('previous final video'));
+      const production = {
+        id: `prod_scene_${Date.now()}`,
+        status: 'ready',
+        script: {
+          title: 'Repair one scene',
+          fullScript: 'A complete factual-review-safe script for testing selective scene repair without replacing the entire production.',
+          hook: { text: 'Fix one weak moment without starting over.' },
+          introduction: { greeting: 'Hello.', topicIntro: 'Scene repair matters.', valueProposition: 'Save time and credits.' },
+          mainContent: { sections: [{ title: 'Selective repair', content: 'Keep the scenes that work and replace only the scene that does not.' }] },
+          conclusion: { recap: ['Preserve good work.'], finalThought: 'Review the repaired timeline.' }
+        },
+        seo: { title: 'Repair one scene', description: 'A detailed description of selective scene repair for video production workflows.', tags: ['video', 'repair', 'workflow'] },
+        strategy: { topic: 'Selective scene repair' },
+        assets: {
+          video: { visualAssets: [imagePath] },
+          audio: null,
+          thumbnail: { path: imagePath },
+          finalVideo: { path: oldVideoPath, simulated: false, duration: '1:00', provider: { actualProvider: 'slideshow' } }
+        },
+        timeline: { readyForUpload: new Date().toISOString() },
+        scheduledPublishTime: new Date(Date.now() + 86400000).toISOString(),
+        priority: 50,
+        estimatedDuration: '1:00'
+      };
+      await db.saveProductionData(production);
+      await db.saveProductionSnapshot(production);
+      await db.saveContentReview(production.id, { status: 'needs_review', editorData: {}, qualityChecks: [] });
+      await db.saveContentProvenance(production.id, {
+        sources: [], claims: [], containsSyntheticMedia: false, status: 'not_required',
+        summary: { sourceCount: 0, verifiedSources: 0, claimCount: 0, resolvedClaims: 0, highRiskClaims: 0, unresolvedClaims: 0 }
+      });
+
+      const manifest = buildInitialSceneManifest(production, { actualProvider: 'slideshow', model: 'local-ffmpeg' });
+      if (manifest.length < 3 || manifest.some(scene => scene.assetPath !== imagePath)) {
+        throw new Error('Initial scene manifest did not preserve the script structure and visual assets');
+      }
+      await db.replaceProductionScenes(production.id, manifest);
+      const roundTrip = await db.listProductionScenes(production.id);
+      if (roundTrip.length !== manifest.length || roundTrip[0].scriptText !== manifest[0].scriptText) {
+        throw new Error('Scene manifest did not round-trip through SQLite');
+      }
+
+      const fakeProvider = {
+        id: 'seedance', model: 'seedance-test',
+        normalizeRequest: request => ({ ...request, duration: Math.min(4, Number(request.duration || 4)) })
+      };
+      const fakeGenerator = {
+        mediaGeneration: {
+          settings: async () => ({ provider: 'seedance', order: ['seedance'], clipDuration: 4, resolution: '720p', aspectRatio: '16:9' }),
+          registry: { select: () => fakeProvider, get: () => fakeProvider },
+          generateClip: async ({ outputPath }) => {
+            await fs.mkdir(path.dirname(outputPath), { recursive: true });
+            await fs.writeFile(outputPath, Buffer.from('generated scene video'));
+            return { outputPath, task: { model: fakeProvider.model, external_task_id: 'scene-task-1' } };
+          },
+          isValidVideo: async () => true
+        },
+        generateVisualAssets: async () => [imagePath],
+        generateTTSAudio: async (_text, outputPath) => { await fs.writeFile(outputPath, Buffer.from('scene narration')); return outputPath; },
+        isUsableAudioFile: async filePath => Boolean(filePath && await fs.stat(filePath).then(stat => stat.size > 0).catch(() => false)),
+        renderMediaTimeline: async (_segments, outputPath) => { await fs.writeFile(outputPath, Buffer.from('rebuilt visual timeline')); return outputPath; },
+        addAudioToVideo: async (videoPath, _audioPath, outputPath) => { await fs.copyFile(videoPath, outputPath); return outputPath; }
+      };
+      const service = new SceneRepairService(db, fakeGenerator, { dataRoot: directory, logger: this.logger });
+      const first = roundTrip[0];
+      const edited = await service.updateScene(production.id, first.id, {
+        scriptText: `${first.scriptText} Updated narration.`, prompt: `${first.prompt} Brighter composition.`, factualChange: false
+      });
+      if (edited.status !== 'visual_stale' || edited.narrationStatus !== 'stale' || edited.revision !== first.revision + 1) {
+        throw new Error('Scene edits did not invalidate only the scene rebuild and narration state');
+      }
+
+      const quality = await new OperatorService(db).runQualityChecks({ ...(await db.getProductionBundle(production.id)), scenes: await db.listProductionScenes(production.id) }, {});
+      if (quality.passed || !quality.blockingFailures.includes('scene_integrity')) {
+        throw new Error('Approval quality checks did not block an unrepaired scene');
+      }
+      const estimate = await service.regenerationEstimate(production.id, first.id);
+      if (!estimate.paid || estimate.provider !== 'seedance') throw new Error('Paid scene estimate did not expose provider billing risk');
+      let paidBlocked = false;
+      try {
+        await service.regenerate(production.id, first.id, { regenerateNarration: true });
+      } catch (error) {
+        paidBlocked = error.code === 'PAID_CONFIRMATION_REQUIRED';
+      }
+      if (!paidBlocked) throw new Error('Paid scene regeneration started without explicit confirmation');
+      const regenerated = await service.regenerate(production.id, first.id, { confirmPaid: true, regenerateNarration: true });
+      if (regenerated.scene.status !== 'needs_rebuild' || regenerated.scene.externalTaskId !== 'scene-task-1' || regenerated.scene.narrationStatus !== 'current') {
+        throw new Error('Confirmed selective regeneration did not persist visual and narration evidence');
+      }
+
+      const second = roundTrip[1];
+      const replacement = await sharp({ create: { width: 320, height: 180, channels: 3, background: '#ad3d45' } }).png().toBuffer();
+      let rightsBlocked = false;
+      try {
+        await service.replaceAsset(production.id, second.id, { buffer: replacement, contentType: 'image/png', filename: 'replacement.png' });
+      } catch (error) {
+        rightsBlocked = error.code === 'RIGHTS_CONFIRMATION_REQUIRED';
+      }
+      if (!rightsBlocked) throw new Error('Uploaded scene asset bypassed rights confirmation');
+      const replaced = await service.replaceAsset(production.id, second.id, {
+        buffer: replacement, contentType: 'image/png', filename: 'replacement.png', rightsConfirmed: true
+      });
+      if (replaced.assetOrigin !== 'uploaded' || !replaced.rightsConfirmed || replaced.status !== 'needs_rebuild') {
+        throw new Error('Replacement asset evidence did not persist');
+      }
+
+      const ordered = await service.reorder(production.id, (await db.listProductionScenes(production.id)).map(scene => scene.id).reverse());
+      if (ordered[0].id === first.id) throw new Error('Scene timeline order did not persist');
+      const rebuilt = await service.rebuild(production.id);
+      const finalBundle = await db.getProductionBundle(production.id);
+      if (!rebuilt.finalVideo || finalBundle.assets.finalVideo.previousPath !== oldVideoPath || finalBundle.scenes.some(scene => scene.status !== 'ready')) {
+        throw new Error('Scene rebuild did not preserve the prior video and finalize every scene');
+      }
+      const revisions = await db.listProductionSceneRevisions(production.id);
+      for (const action of ['edit', 'regenerate', 'replace_asset', 'reorder', 'rebuild']) {
+        if (!revisions.some(revision => revision.action === action)) throw new Error(`Scene revision history is missing ${action}`);
+      }
+
+      const locked = await service.updateScene(production.id, ordered[0].id, { locked: true });
+      let lockBlocked = false;
+      try {
+        await service.updateScene(production.id, locked.id, { prompt: 'Unauthorized locked edit' });
+      } catch (error) {
+        lockBlocked = error.status === 409;
+      }
+      if (!lockBlocked) throw new Error('Locked scene accepted an edit');
+    } finally {
+      await db.close();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+    this.logger.info('Scene Repair Studio test completed successfully');
   }
 
   async testProvenanceDesk() {

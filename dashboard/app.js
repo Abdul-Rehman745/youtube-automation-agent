@@ -541,6 +541,55 @@ function renderProvenanceEditor(provenance = {}, canReview = true) {
   </section>`;
 }
 
+function renderSceneEditor(item, canReview = true) {
+  const scenes = item.scenes || [];
+  if (!scenes.length) return '';
+  const verifiedSources = (item.provenance?.sources || []).filter(source => source.status === 'verified');
+  return `<section class="scene-repair-panel">
+    <div class="panel-heading scene-heading">
+      <div><p class="eyebrow">SCENE REPAIR STUDIO</p><h3>Repair the timeline, not the whole video</h3><p>Edit, replace, or regenerate one scene. Changes remain draft-only until the timeline is rebuilt and approved.</p></div>
+      ${canReview ? `<button type="button" class="button primary small" data-rebuild-scenes="${escapeHTML(item.id)}">Rebuild final video</button>` : ''}
+    </div>
+    <div class="scene-summary"><strong>${scenes.length} scenes</strong><span>${Math.round(scenes.reduce((sum, scene) => sum + Number(scene.duration || 0), 0))}s timeline</span><span>${scenes.filter(scene => scene.status !== 'ready').length} pending repairs</span></div>
+    <div class="scene-list">
+      ${scenes.map((scene, index) => {
+        const disabled = !canReview || scene.locked;
+        const sourceIds = new Set(scene.provenanceSourceIds || []);
+        const preview = scene.assetUrl
+          ? scene.assetType === 'video'
+            ? `<video controls preload="metadata"><source src="${escapeHTML(scene.assetUrl)}"></video>`
+            : `<img src="${escapeHTML(scene.assetUrl)}" alt="${escapeHTML(scene.label)} scene asset">`
+          : '<div class="preview-placeholder">No scene asset</div>';
+        return `<article class="scene-card ${scene.locked ? 'locked' : ''}" data-scene-card="${escapeHTML(scene.id)}">
+          <div class="scene-card-top">
+            <div class="scene-preview">${preview}<span class="scene-number">${index + 1}</span></div>
+            <div class="scene-identity">
+              <div class="scene-status-row">${statusChip(scene.status)} ${scene.narrationStatus === 'stale' ? statusChip('narration_stale') : ''}<span>r${scene.revision}</span></div>
+              <label><span>Scene label</span><input data-scene-field="label" maxlength="120" value="${escapeHTML(scene.label)}" ${disabled ? 'disabled' : ''}></label>
+              <label><span>Duration</span><input data-scene-field="duration" type="number" min="2" max="600" step="0.5" value="${escapeHTML(scene.duration)}" ${disabled ? 'disabled' : ''}></label>
+            </div>
+          </div>
+          <label><span>Narration</span><textarea data-scene-field="scriptText" rows="4" maxlength="10000" ${disabled ? 'disabled' : ''}>${escapeHTML(scene.scriptText)}</textarea></label>
+          <label><span>Visual prompt</span><textarea data-scene-field="prompt" rows="3" maxlength="2000" ${disabled ? 'disabled' : ''}>${escapeHTML(scene.prompt)}</textarea></label>
+          ${verifiedSources.length ? `<fieldset class="source-checklist scene-sources" ${disabled ? 'disabled' : ''}><legend>Verified evidence linked to this narration</legend>${verifiedSources.map(source => `<label><input type="checkbox" data-scene-source value="${escapeHTML(source.id)}" ${sourceIds.has(source.id) ? 'checked' : ''}> ${escapeHTML(source.title)}</label>`).join('')}</fieldset>` : ''}
+          <div class="scene-options">
+            <label class="toggle"><input type="checkbox" data-scene-factual checked ${disabled ? 'disabled' : ''}><span></span> Narration changes may contain factual claims</label>
+            <span>${escapeHTML(scene.provider || 'local')} ${scene.model ? `· ${escapeHTML(scene.model)}` : ''}</span>
+          </div>
+          ${canReview ? `<div class="scene-actions">
+            <button type="button" class="text-button" data-scene-move="up" ${disabled || index === 0 ? 'disabled' : ''}>↑ Earlier</button>
+            <button type="button" class="text-button" data-scene-move="down" ${disabled || index === scenes.length - 1 ? 'disabled' : ''}>↓ Later</button>
+            <button type="button" class="text-button approve" data-scene-save ${disabled ? 'disabled' : ''}>Save scene</button>
+            <button type="button" class="text-button" data-scene-regenerate ${disabled ? 'disabled' : ''}>Regenerate scene</button>
+            <label class="text-button upload-button ${disabled ? 'disabled' : ''}">Replace asset<input type="file" data-scene-upload accept="image/png,image/jpeg,image/webp,video/mp4" ${disabled ? 'disabled' : ''}></label>
+            <button type="button" class="text-button" data-scene-lock>${scene.locked ? 'Unlock' : 'Lock'}</button>
+          </div>` : ''}
+        </article>`;
+      }).join('')}
+    </div>
+  </section>`;
+}
+
 async function openContent(productionId) {
   $('#loading').classList.add('active');
   try {
@@ -556,22 +605,26 @@ async function openContent(productionId) {
     const selectedThumbnailVariant = Number(data.selectedThumbnailVariant || 0);
     $('#content-detail').innerHTML = `
       <div class="dialog-heading"><div><p class="eyebrow">CONTENT REVIEW</p><h2>${escapeHTML(title)}</h2><div class="meta-line">${statusChip(item.schedule?.status || item.review_status || item.status)} · Quality ${qualityScore(item.qualityChecks)}%</div></div><button type="button" class="close-button" data-close>×</button></div>
-      <div class="content-layout">
-        <div>
-          <div class="preview">${item.assetUrls.video ? `<video controls preload="metadata" poster="${item.assetUrls.thumbnail || ''}"><source src="${item.assetUrls.video}" type="video/mp4"></video>` : item.assetUrls.thumbnail ? `<img src="${item.assetUrls.thumbnail}" alt="Generated thumbnail">` : '<div class="preview-placeholder">No playable preview was produced.</div>'}</div>
-          <div class="quality-grid">${(item.qualityChecks || []).map(check => `<div class="quality-check ${check.passed ? 'pass' : 'fail'}">${check.passed ? '✓' : '×'} ${escapeHTML(check.message)}</div>`).join('') || '<div class="quality-check">No quality results recorded.</div>'}</div>
-          ${item.review_notes ? `<p class="callout">${escapeHTML(item.review_notes)}</p>` : ''}
+      <form id="content-review-form" class="editor content-review-editor">
+        <div class="content-layout">
+          <div>
+            <div class="preview">${item.assetUrls.video ? `<video controls preload="metadata" poster="${item.assetUrls.thumbnail || ''}"><source src="${item.assetUrls.video}" type="video/mp4"></video>` : item.assetUrls.thumbnail ? `<img src="${item.assetUrls.thumbnail}" alt="Generated thumbnail">` : '<div class="preview-placeholder">No playable preview was produced.</div>'}</div>
+            <div class="quality-grid">${(item.qualityChecks || []).map(check => `<div class="quality-check ${check.passed ? 'pass' : 'fail'}">${check.passed ? '✓' : '×'} ${escapeHTML(check.message)}</div>`).join('') || '<div class="quality-check">No quality results recorded.</div>'}</div>
+            ${item.review_notes ? `<p class="callout">${escapeHTML(item.review_notes)}</p>` : ''}
+          </div>
+          <div class="editor">
+            <label><span>Title</span><input name="title" maxlength="100" value="${escapeHTML(title)}" required></label>
+            <label><span>Description</span><textarea name="description" rows="7">${escapeHTML(description)}</textarea></label>
+            <label><span>Tags</span><input name="tags" value="${escapeHTML(tags.join(', '))}"></label>
+            ${experiment ? `<section class="experiment-panel">
+              <div><p class="eyebrow">APPROVED LEARNING EXPERIMENT</p><strong>${escapeHTML(experiment.hypothesis)}</strong><p>Choose the packaging to ship. Nothing changes on YouTube until this content is approved and published.</p></div>
+              <label><span>Title variant</span><select name="selectedTitleVariant">${experiment.titleVariants.map((variant, index) => `<option value="${index}" data-title="${escapeHTML(variant.title)}" ${index === selectedTitleVariant ? 'selected' : ''}>${escapeHTML(variant.label)} — ${escapeHTML(variant.title)}</option>`).join('')}</select></label>
+              <div class="experiment-thumbnails">${experiment.thumbnailVariants.map((variant, index) => `<label class="experiment-thumb ${index === selectedThumbnailVariant ? 'selected' : ''}"><input type="radio" name="selectedThumbnailVariant" value="${index}" ${index === selectedThumbnailVariant ? 'checked' : ''}><img src="${escapeHTML(item.assetUrls.experimentThumbnails?.[index] || '')}" alt="${escapeHTML(variant.label)} thumbnail variant"><span>${escapeHTML(variant.label)}</span></label>`).join('')}</div>
+            </section>` : ''}
+          </div>
         </div>
-        <form id="content-review-form" class="editor">
-          <label><span>Title</span><input name="title" maxlength="100" value="${escapeHTML(title)}" required></label>
-          <label><span>Description</span><textarea name="description" rows="7">${escapeHTML(description)}</textarea></label>
-          <label><span>Tags</span><input name="tags" value="${escapeHTML(tags.join(', '))}"></label>
-          ${experiment ? `<section class="experiment-panel">
-            <div><p class="eyebrow">APPROVED LEARNING EXPERIMENT</p><strong>${escapeHTML(experiment.hypothesis)}</strong><p>Choose the packaging to ship. Nothing changes on YouTube until this content is approved and published.</p></div>
-            <label><span>Title variant</span><select name="selectedTitleVariant">${experiment.titleVariants.map((variant, index) => `<option value="${index}" data-title="${escapeHTML(variant.title)}" ${index === selectedTitleVariant ? 'selected' : ''}>${escapeHTML(variant.label)} — ${escapeHTML(variant.title)}</option>`).join('')}</select></label>
-            <div class="experiment-thumbnails">${experiment.thumbnailVariants.map((variant, index) => `<label class="experiment-thumb ${index === selectedThumbnailVariant ? 'selected' : ''}"><input type="radio" name="selectedThumbnailVariant" value="${index}" ${index === selectedThumbnailVariant ? 'checked' : ''}><img src="${escapeHTML(item.assetUrls.experimentThumbnails?.[index] || '')}" alt="${escapeHTML(variant.label)} thumbnail variant"><span>${escapeHTML(variant.label)}</span></label>`).join('')}</div>
-          </section>` : ''}
-          ${renderProvenanceEditor(item.provenance, canReview)}
+        ${renderSceneEditor(item, canReview)}
+        ${renderProvenanceEditor(item.provenance, canReview)}
           <div class="form-grid two">
             <label><span>Publish time</span><input name="publishTime" type="datetime-local" value="${toLocalInput(publishTime)}"></label>
             <label><span>Privacy</span><select name="privacyStatus"><option value="private" ${data.privacyStatus === 'private' ? 'selected' : ''}>Private</option><option value="unlisted" ${data.privacyStatus === 'unlisted' ? 'selected' : ''}>Unlisted</option><option value="public" ${data.privacyStatus === 'public' ? 'selected' : ''}>Public</option></select></label>
@@ -581,8 +634,7 @@ async function openContent(productionId) {
             <label class="toggle"><input name="rightsConfirmed" type="checkbox" ${data.rightsConfirmed ? 'checked' : ''}><span></span> Media rights confirmed</label>
           </div>
           ${canReview ? `<div class="form-actions"><button type="button" class="button primary" data-approve-content="${escapeHTML(item.id)}">Approve & schedule</button><button type="button" class="button secondary" data-save-content="${escapeHTML(item.id)}">Save draft</button><button type="button" class="button danger" data-reject-content="${escapeHTML(item.id)}">Reject</button><button type="button" class="button ghost" data-retry-content="${escapeHTML(item.id)}">Regenerate</button></div>` : `<a class="button secondary" href="${escapeHTML(item.schedule?.youtube_url || '#')}" target="_blank" rel="noopener">Open on YouTube</a>`}
-        </form>
-      </div>`;
+      </form>`;
     $('#content-review-form').dataset.productionId = item.id;
     $('#content-dialog').showModal();
   } catch (error) {
@@ -614,6 +666,47 @@ function contentFormData() {
     factChecked: form.elements.factChecked?.checked || false,
     rightsConfirmed: form.elements.rightsConfirmed?.checked || false
   };
+}
+
+function sceneFormData(card) {
+  return {
+    label: card.querySelector('[data-scene-field="label"]').value,
+    duration: Number(card.querySelector('[data-scene-field="duration"]').value),
+    scriptText: card.querySelector('[data-scene-field="scriptText"]').value,
+    prompt: card.querySelector('[data-scene-field="prompt"]').value,
+    provenanceSourceIds: Array.from(card.querySelectorAll('[data-scene-source]:checked')).map(input => input.value),
+    factualChange: card.querySelector('[data-scene-factual]')?.checked !== false
+  };
+}
+
+async function refreshContentDialog(productionId, message) {
+  if (message) showToast(message);
+  if ($('#content-dialog').open) $('#content-dialog').close();
+  await refreshDashboard(true);
+  await openContent(productionId);
+}
+
+async function uploadSceneAsset(productionId, sceneId, file) {
+  if (!confirm('Confirm you own or have permission to use this replacement asset.')) return;
+  const synthetic = confirm('Does this replacement contain realistic altered or synthetic media that should be disclosed to YouTube?');
+  $('#loading').classList.add('active');
+  try {
+    await api(`/api/content/${encodeURIComponent(productionId)}/scenes/${encodeURIComponent(sceneId)}/asset`, {
+      method: 'PUT',
+      body: file,
+      headers: {
+        'Content-Type': file.type,
+        'x-file-name': file.name,
+        'x-rights-confirmed': 'true',
+        'x-synthetic-media': String(synthetic)
+      }
+    });
+    await refreshContentDialog(productionId, 'Scene asset replaced. Rebuild before approval.');
+  } catch (error) {
+    showToast(error.message, 'error');
+  } finally {
+    $('#loading').classList.remove('active');
+  }
 }
 
 function provenanceFormData() {
@@ -732,6 +825,69 @@ document.addEventListener('click', async event => {
     await mutate(`/api/learning/recommendations/${encodeURIComponent(id)}/${action}`, 'POST', {}, message).catch(() => {});
   }
 
+  const sceneButton = event.target.closest('[data-scene-save], [data-scene-regenerate], [data-scene-lock], [data-scene-move]');
+  if (sceneButton) {
+    const card = sceneButton.closest('[data-scene-card]');
+    const productionId = $('#content-review-form')?.dataset.productionId;
+    const sceneId = card?.dataset.sceneCard;
+    if (!productionId || !sceneId) return;
+    try {
+      if (sceneButton.matches('[data-scene-lock]')) {
+        await api(`/api/content/${encodeURIComponent(productionId)}/scenes/${encodeURIComponent(sceneId)}`, {
+          method: 'PATCH', body: JSON.stringify({ locked: !card.classList.contains('locked') })
+        });
+        await refreshContentDialog(productionId, card.classList.contains('locked') ? 'Scene unlocked.' : 'Scene locked.');
+        return;
+      }
+      if (sceneButton.matches('[data-scene-move]')) {
+        const cards = $$('[data-scene-card]');
+        const index = cards.indexOf(card);
+        const target = sceneButton.dataset.sceneMove === 'up' ? index - 1 : index + 1;
+        if (target < 0 || target >= cards.length) return;
+        const ids = cards.map(item => item.dataset.sceneCard);
+        [ids[index], ids[target]] = [ids[target], ids[index]];
+        await api(`/api/content/${encodeURIComponent(productionId)}/scenes/reorder`, {
+          method: 'POST', body: JSON.stringify({ sceneIds: ids })
+        });
+        await refreshContentDialog(productionId, 'Timeline order updated. Rebuild before approval.');
+        return;
+      }
+      await api(`/api/content/${encodeURIComponent(productionId)}/scenes/${encodeURIComponent(sceneId)}`, {
+        method: 'PATCH', body: JSON.stringify(sceneFormData(card))
+      });
+      if (sceneButton.matches('[data-scene-save]')) {
+        await refreshContentDialog(productionId, 'Scene draft saved.');
+        return;
+      }
+      const estimate = await api(`/api/content/${encodeURIComponent(productionId)}/scenes/${encodeURIComponent(sceneId)}/estimate`);
+      const message = estimate.paid
+        ? `Regenerate only this scene with ${estimate.provider} (${estimate.generatedSeconds}s). This consumes provider credits; the provider invoice is authoritative. Continue?`
+        : 'Regenerate only this scene with the configured image provider? A live image request may consume provider credits. Continue?';
+      if (!confirm(message)) return;
+      await api(`/api/content/${encodeURIComponent(productionId)}/scenes/${encodeURIComponent(sceneId)}/regenerate`, {
+        method: 'POST', body: JSON.stringify({ confirmPaid: estimate.paid })
+      });
+      await refreshContentDialog(productionId, 'Scene regenerated. Rebuild the final video when the timeline is ready.');
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+    return;
+  }
+
+  const rebuildScenes = event.target.closest('[data-rebuild-scenes]');
+  if (rebuildScenes) {
+    const productionId = rebuildScenes.dataset.rebuildScenes;
+    if (confirm('Rebuild a new final MP4 from the current scene timeline? The previous final video will be preserved.')) {
+      try {
+        await api(`/api/content/${encodeURIComponent(productionId)}/scenes/rebuild`, { method: 'POST', body: '{}' });
+        await refreshContentDialog(productionId, 'Final video rebuilt from the repaired timeline. Review it before approval.');
+      } catch (error) {
+        showToast(error.message, 'error');
+      }
+    }
+    return;
+  }
+
   const addSource = event.target.closest('[data-add-provenance-source]');
   if (addSource) {
     const list = $('#provenance-sources');
@@ -799,6 +955,14 @@ document.addEventListener('change', event => {
     const title = event.target.selectedOptions[0]?.dataset.title;
     const input = $('#content-review-form [name="title"]');
     if (title && input) input.value = title;
+  }
+  if (event.target.matches('[data-scene-upload]')) {
+    const file = event.target.files?.[0];
+    const card = event.target.closest('[data-scene-card]');
+    const productionId = $('#content-review-form')?.dataset.productionId;
+    if (file && card && productionId) {
+      uploadSceneAsset(productionId, card.dataset.sceneCard, file);
+    }
   }
 });
 

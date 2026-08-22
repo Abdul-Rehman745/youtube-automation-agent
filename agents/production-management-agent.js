@@ -2,6 +2,7 @@ const path = require('path');
 const fs = require('fs').promises;
 const { Logger } = require('../utils/logger');
 const { AIVideoGenerator } = require('../utils/ai-video-generator');
+const { SceneRepairService } = require('../utils/scene-repair-service');
 
 class ProductionManagementAgent {
   constructor(db, credentials) {
@@ -11,6 +12,7 @@ class ProductionManagementAgent {
     this.pipeline = [];
     this.assets = new Map();
     this.aiVideoGenerator = new AIVideoGenerator(credentials, { db });
+    this.sceneRepair = new SceneRepairService(db, this.aiVideoGenerator, { logger: this.logger });
   }
 
   async initialize() {
@@ -100,6 +102,9 @@ class ProductionManagementAgent {
       
       // Final assembly
       await this.assembleVideo(productionData);
+
+      // Persist a scene-addressable production manifest for selective review and repair.
+      await this.sceneRepair.initializeProduction(productionData, this.aiVideoGenerator.lastVideoResult || {});
 
       // Mark as ready — or simulated, when no real video could be produced
       const simulated = Boolean(productionData.assets.finalVideo?.simulated);

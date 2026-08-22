@@ -30,7 +30,9 @@ class OperatorService {
       this.check('thumbnail', Boolean(thumbnail?.path),
         thumbnail?.path ? 'Thumbnail asset is present' : 'Thumbnail asset is missing', false),
       this.check('video', Boolean(finalVideo?.path && !finalVideo?.simulated),
-        finalVideo?.simulated ? 'Only a simulated video was produced' : 'Final MP4 is missing')
+        finalVideo?.simulated
+          ? 'Only a simulated video was produced'
+          : finalVideo?.path ? 'Final MP4 is ready' : 'Final MP4 is missing')
     ];
 
     const topic = String(production.strategy?.topic || '').trim();
@@ -70,6 +72,22 @@ class OperatorService {
         : provenance.status === 'not_required'
           ? 'No externally verifiable factual claims were declared'
           : `${unresolved} factual claim${unresolved === 1 ? '' : 's'} still require evidence review`));
+
+    const scenes = production.scenes || [];
+    if (scenes.length) {
+      const invalidScenes = scenes.filter(scene =>
+        !scene.assetPath || ['missing_asset', 'failed', 'generating', 'needs_rebuild', 'visual_stale'].includes(scene.status) || scene.narrationStatus === 'stale'
+      );
+      const unlicensedUploads = scenes.filter(scene => scene.assetOrigin === 'uploaded' && !scene.rightsConfirmed);
+      checks.push(this.check('scene_integrity', invalidScenes.length === 0,
+        invalidScenes.length === 0
+          ? `${scenes.length} scene${scenes.length === 1 ? '' : 's'} are rebuilt and current`
+          : `${invalidScenes.length} scene${invalidScenes.length === 1 ? '' : 's'} still require repair or rebuild`));
+      checks.push(this.check('scene_rights', unlicensedUploads.length === 0,
+        unlicensedUploads.length === 0
+          ? 'Replacement scene assets have rights confirmation'
+          : `${unlicensedUploads.length} uploaded scene asset${unlicensedUploads.length === 1 ? '' : 's'} lack rights confirmation`));
+    }
 
     const blockingFailures = checks.filter(check => check.blocking && !check.passed);
     return {
