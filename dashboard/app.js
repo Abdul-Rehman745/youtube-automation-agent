@@ -1140,12 +1140,14 @@ document.addEventListener('click', async event => {
     const text = card?.querySelector('[data-reply-text]')?.value || '';
     await mutate(`/api/engagement/replies/${encodeURIComponent(replySave.dataset.replySave)}`, 'PATCH', { editedText: text }, 'Reply draft updated.').catch(() => {});
     ui.engagementDetail = null;
+    renderEngagement(ui.state?.engagement || {});
   }
 
   const replyDiscard = event.target.closest('[data-reply-discard]');
   if (replyDiscard) {
     await mutate(`/api/engagement/replies/${encodeURIComponent(replyDiscard.dataset.replyDiscard)}`, 'PATCH', { discard: true }, 'Reply draft discarded.').catch(() => {});
     ui.engagementDetail = null;
+    renderEngagement(ui.state?.engagement || {});
   }
 
   const replyApprove = event.target.closest('[data-reply-approve]');
@@ -1155,6 +1157,7 @@ document.addEventListener('click', async event => {
     if (confirm(`Post this reply to YouTube?\n\n${text}`)) {
       await mutate(`/api/engagement/replies/${encodeURIComponent(replyApprove.dataset.replyApprove)}/approve`, 'POST', { confirmed: true, editedText: text }, 'Reply posted to YouTube.').catch(() => {});
       ui.engagementDetail = null;
+      renderEngagement(ui.state?.engagement || {});
     }
   }
 
