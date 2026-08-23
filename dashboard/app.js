@@ -472,7 +472,11 @@ function renderEngagementDetail() {
       </div>
     </article>`;
   }).join('') : empty('No reply drafts for this video yet.');
-  if (!draftsContainer.contains(document.activeElement)) draftsContainer.innerHTML = draftsHTML;
+  // Guard the focused textarea only: a clicked action button also holds focus, and skipping
+  // the rebuild for it would leave the panel showing pre-action state.
+  const editingReply = draftsContainer.contains(document.activeElement)
+    && document.activeElement.matches('[data-reply-text]');
+  if (!editingReply) draftsContainer.innerHTML = draftsHTML;
 
   const attention = Array.isArray(insight.attentionFlags) ? insight.attentionFlags : [];
   $('#engagement-attention').innerHTML = attention.length ? attention.map(flag => {
