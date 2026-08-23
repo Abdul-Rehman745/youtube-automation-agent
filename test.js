@@ -52,7 +52,8 @@ class SystemTest {
       { name: 'Engagement Insight Store', test: () => this.testEngagementInsightStore() },
       { name: 'Reply Draft Lifecycle Store', test: () => this.testReplyDraftStore() },
       { name: 'YouTube Scope Detection', test: () => this.testYouTubeScopeDetection() },
-      { name: 'Audience Comment Sync', test: () => this.testAudienceCommentSync() }
+      { name: 'Audience Comment Sync', test: () => this.testAudienceCommentSync() },
+      { name: 'Audience Comment Analysis', test: () => this.testAudienceCommentAnalysis() }
     ];
 
     let passed = 0;
@@ -2524,6 +2525,84 @@ class SystemTest {
     } finally {
       await db.executeQuery("DELETE FROM audience_comments WHERE video_id LIKE ?", [`${videoId}%`]);
       await db.executeQuery("DELETE FROM engagement_insights WHERE video_id LIKE ?", [`${videoId}%`]);
+      await db.close();
+    }
+  }
+
+  async testAudienceCommentAnalysis() {
+    const db = new Database();
+    await db.initialize();
+    const videoId = `vid_analysis_${Date.now()}`;
+    const seed = async (suffix, text, likeCount = 0) => db.upsertAudienceComment({
+      commentId: `${videoId}_${suffix}`, videoId, text, likeCount,
+      publishedAt: new Date().toISOString()
+    });
+    try {
+      await seed('q1', 'How do I configure the render cache?', 4);
+      await seed('q2', 'Can you explain the cache setup?', 2);
+      await seed('q3', 'What cache settings do you use?', 1);
+      await seed('scam1', 'Congratulations! Message me on telegram to claim your prize');
+      const aiResponse = JSON.stringify({
+        comments: [
+          { commentId: `${videoId}_q1`, sentiment: 'positive', flags: ['question'] },
+          { commentId: `${videoId}_q2`, sentiment: 'neutral', flags: ['question'] },
+          { commentId: `${videoId}_q3`, sentiment: 'neutral', flags: ['question'] },
+          { commentId: `${videoId}_scam1`, sentiment: 'neutral', flags: ['scam'] },
+          { commentId: 'not_a_real_comment', sentiment: 'negative', flags: ['toxic'] }
+        ],
+        themes: [
+          { title: 'Render cache setup', summary: 'Viewers want a cache configuration walkthrough', kind: 'question',
+            commentIds: [`${videoId}_q1`, `${videoId}_q2`, `${videoId}_q3`, `${videoId}_scam1`, 'not_a_real_comment'] },
+          { title: 'Bad theme', summary: 'Only one supporter', kind: 'feedback', commentIds: [`${videoId}_q1`] }
+        ]
+      });
+      const service = new AudienceEngagementService(db, null, {
+        isAvailable: () => true,
+        generateText: async () => aiResponse
+      }, {});
+
+      const insight = await service.analyzeVideo(videoId);
+      if (insight.analysisMethod !== 'ai') throw new Error('AI analysis was not recorded as ai');
+      if (insight.sentiment.positive !== 1 || insight.sentiment.neutral !== 3) throw new Error('Sentiment counts are wrong');
+      if (insight.themes.length !== 1) throw new Error('Theme normalization must drop single-comment themes');
+      if (insight.themes[0].count !== 3) throw new Error('Quarantined and unknown comment ids must not count toward themes');
+      if (insight.attentionFlags.length !== 1 || insight.attentionFlags[0].commentId !== `${videoId}_scam1`) {
+        throw new Error('Scam comment must land in attentionFlags');
+      }
+      const scam = await db.getAudienceComment(`${videoId}_scam1`);
+      if (!scam.flags.includes('scam')) throw new Error('Per-comment flags were not stored');
+
+      // parseAIJsonResponse handles fenced, embedded, and malformed output
+      if (service.parseAIJsonResponse('```json\n{"a":1}\n```')?.a !== 1) throw new Error('Fenced JSON must parse');
+      if (service.parseAIJsonResponse('noise before [1,2] noise after')?.[0] !== 1) throw new Error('Embedded arrays must parse');
+      if (service.parseAIJsonResponse('not json at all') !== null) throw new Error('Garbage must return null');
+
+      // Fallback: mechanical facts only, no themes
+      const fallbackVideo = `${videoId}_fb`;
+      await db.upsertAudienceComment({ commentId: `${fallbackVideo}_c1`, videoId: fallbackVideo, text: 'Is this real?', publishedAt: new Date().toISOString() });
+      const fallbackService = new AudienceEngagementService(db, null, { isAvailable: () => false }, {});
+      const fallback = await fallbackService.analyzeVideo(fallbackVideo);
+      if (fallback.analysisMethod !== 'fallback') throw new Error('Fallback method was not recorded');
+      if (fallback.themes.length !== 0) throw new Error('Fallback must never invent themes');
+      if (fallback.sentiment.method !== 'fallback' || 'positive' in fallback.sentiment) throw new Error('Fallback must not claim sentiment');
+      const fallbackComment = await db.getAudienceComment(`${fallbackVideo}_c1`);
+      if (!fallbackComment.flags.includes('question')) throw new Error('Fallback question detection failed');
+
+      // syncDueVideos delegates and analyzes only after a fetching sync
+      let analyzeCalls = 0;
+      const dueService = new AudienceEngagementService(db, null, { isAvailable: () => false }, {
+        listCommentThreads: async () => ({ items: [] })
+      });
+      dueService.analyzeVideo = async () => { analyzeCalls++; };
+      const results = await dueService.syncDueVideos([
+        { youtubeId: `${videoId}_due`, title: 'Due', publishedAt: new Date().toISOString(), productionId: null },
+        { youtubeId: null }
+      ]);
+      if (results.synced !== 1 || results.skipped !== 1) throw new Error(`syncDueVideos counters are wrong: ${JSON.stringify(results)}`);
+      if (analyzeCalls !== 0) throw new Error('A sync that fetched nothing must not trigger analysis');
+    } finally {
+      await db.executeQuery('DELETE FROM audience_comments WHERE video_id LIKE ?', [`${videoId}%`]);
+      await db.executeQuery('DELETE FROM engagement_insights WHERE video_id LIKE ?', [`${videoId}%`]);
       await db.close();
     }
   }
