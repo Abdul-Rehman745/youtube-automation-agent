@@ -336,6 +336,57 @@ class PublishingSchedulingAgent {
     }
   }
 
+  async applyVideoPackaging(videoId, packaging = {}, previousPackaging = null) {
+    const title = String(packaging.title || '').trim();
+    if (!videoId || !title || title.length > 100 || !packaging.thumbnailPath) {
+      const error = new Error('A valid video ID, title, and thumbnail are required for a packaging change');
+      error.status = 400;
+      error.code = 'PACKAGING_INVALID';
+      throw error;
+    }
+    const thumbnail = await fs.readFile(packaging.thumbnailPath);
+    const current = await this.youtube.videos.list({ part: 'snippet', id: videoId });
+    const snippet = current.data.items?.[0]?.snippet;
+    if (!snippet) {
+      const error = new Error(`YouTube video not found: ${videoId}`);
+      error.status = 404;
+      error.code = 'PACKAGING_VIDEO_NOT_FOUND';
+      throw error;
+    }
+
+    const updateTitle = async nextTitle => this.youtube.videos.update({
+      part: 'snippet',
+      requestBody: {
+        id: videoId,
+        snippet: {
+          title: nextTitle,
+          description: snippet.description || '',
+          tags: snippet.tags || [],
+          categoryId: snippet.categoryId || '22',
+          defaultLanguage: snippet.defaultLanguage,
+          defaultAudioLanguage: snippet.defaultAudioLanguage
+        }
+      }
+    });
+
+    await updateTitle(title);
+    try {
+      await this.youtube.thumbnails.set({
+        videoId,
+        media: { body: thumbnail }
+      });
+    } catch (error) {
+      try {
+        await updateTitle(String(previousPackaging?.title || snippet.title || '').trim());
+      } catch (rollbackError) {
+        error.message = `${error.message}; title rollback also failed: ${rollbackError.message}`;
+      }
+      throw error;
+    }
+    this.logger.info(`Applied approved growth-experiment packaging to video: ${videoId}`);
+    return { videoId, title, thumbnailPath: packaging.thumbnailPath };
+  }
+
   async uploadCaptions(videoId, captionsPath) {
     try {
       const captionsContent = await fs.readFile(captionsPath, 'utf8');

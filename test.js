@@ -27,6 +27,7 @@ class SystemTest {
       { name: 'Operator Workflow API', test: () => this.testOperatorWorkflowAPI() },
       { name: 'Autonomous Channel Operator', test: () => this.testAutonomousChannelOperator() },
       { name: 'Closed-loop Channel Learning', test: () => this.testChannelLearningLoop() },
+      { name: 'Controlled Growth Experiments Studio', test: () => this.testGrowthExperimentsStudio() },
       { name: 'Outcome and ROI Studio', test: () => this.testOutcomeROIStudio() },
       { name: 'Scene-Aware Retention Studio', test: () => this.testSceneAwareRetentionStudio() },
       { name: 'Production Readiness Gate', test: () => this.testProductionReadinessGate() },
@@ -60,7 +61,8 @@ class SystemTest {
       { name: 'Reply Drafting', test: () => this.testReplyDrafting() },
       { name: 'Reply Approval and Posting', test: () => this.testReplyApprovalAndPosting() },
       { name: 'Engagement AI Provider Wiring', test: () => this.testEngagementAIProviderWiring() },
-      { name: 'Engagement Sync Schedule', test: () => this.testEngagementSyncSchedule() }
+      { name: 'Engagement Sync Schedule', test: () => this.testEngagementSyncSchedule() },
+      { name: 'Growth Experiment Refresh Schedule', test: () => this.testGrowthExperimentRefreshSchedule() }
     ];
 
     let passed = 0;
@@ -595,6 +597,141 @@ class SystemTest {
     }
 
     this.logger.info('Closed-loop channel learning test completed successfully');
+  }
+
+  async testGrowthExperimentsStudio() {
+    const fs = require('fs').promises;
+    const os = require('os');
+    const { GrowthExperimentService } = require('./utils/growth-experiment-service');
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'yaa-experiments-'));
+    const db = new Database();
+    db.dbPath = path.join(directory, 'experiments.db');
+    await db.initialize();
+    const productionId = 'experiment-production';
+    const thumbnails = await Promise.all(['control', 'variant-a', 'variant-b'].map(async name => {
+      const file = path.join(directory, `${name}.jpg`);
+      await fs.writeFile(file, Buffer.from(`thumbnail-${name}`));
+      return file;
+    }));
+
+    try {
+      await db.saveProductionData({
+        id: productionId, status: 'published',
+        assets: { thumbnail: { path: thumbnails[0] }, finalVideo: { path: 'fixture.mp4' } },
+        timeline: {}, scheduledPublishTime: new Date().toISOString(), priority: 50, estimatedDuration: '8:00'
+      });
+      await db.saveProductionSnapshot({
+        id: productionId,
+        strategy: { topic: 'Controlled growth' },
+        script: { title: 'Control title' },
+        thumbnail: { path: thumbnails[0] },
+        seo: { title: 'Control title', description: 'Fixture', tags: [] }
+      });
+      const sourceLearning = await db.saveLearningRecommendation({
+        fingerprint: 'growth-experiment-source', category: 'packaging',
+        title: 'Test packaging', rationale: 'CTR trails the channel baseline.',
+        evidence: { measuredVideos: 4 }, proposedChange: { experiment: 'title_thumbnail_variant' }, confidence: 'medium'
+      });
+      await db.reviewLearningRecommendation(sourceLearning.id, 'approved');
+      await db.saveContentReview(productionId, {
+        status: 'approved',
+        editorData: {
+          packagingExperiment: {
+            sourceRecommendationId: sourceLearning.id,
+            hypothesis: 'A clearer promise improves qualified clicks.',
+            titleVariants: [
+              { label: 'Control', title: 'Control title' },
+              { label: 'Clear benefit', title: 'A Clearer Automation Benefit' },
+              { label: 'Curiosity', title: 'The Automation Detail You Missed' }
+            ],
+            thumbnailVariants: [
+              { label: 'Control', path: thumbnails[0] },
+              { label: 'Clear benefit', path: thumbnails[1] },
+              { label: 'Curiosity', path: thumbnails[2] }
+            ]
+          }
+        }
+      });
+      const schedule = await db.saveScheduleEntry({
+        productionId, title: 'Control title', publishTime: new Date(Date.now() - 8 * 86400000).toISOString(),
+        status: 'published', priority: 50,
+        metadata: { seo: { title: 'Control title', description: 'Fixture', tags: [] }, thumbnail: { path: thumbnails[0] } }
+      });
+      schedule.status = 'published';
+      schedule.youtubeId = 'youtube-experiment-1';
+      schedule.youtubeUrl = 'https://www.youtube.com/watch?v=youtube-experiment-1';
+      schedule.publishedAt = new Date(Date.now() - 8 * 86400000).toISOString();
+      await db.updateScheduleEntry(schedule);
+
+      const cumulative = [
+        { impressions: 10000, clicks: 500, views: 700 },
+        { impressions: 11000, clicks: 550, views: 770 },
+        { impressions: 12000, clicks: 650, views: 860 },
+        { impressions: 13000, clicks: 690, views: 920 }
+      ];
+      let reportIndex = 0;
+      const analytics = {
+        analyzeVideoPerformance: async () => {
+          const point = cumulative[Math.min(reportIndex++, cumulative.length - 1)];
+          return {
+            analytics: {
+              simulated: false,
+              views: { totalViews: point.views, totalImpressions: point.impressions, averageCTR: point.clicks / point.impressions * 100 },
+              watchTime: { totalWatchTime: point.views * 4, averageViewPercentage: 55 },
+              engagement: { engagementRate: 4.5 },
+              outcomes: { netSubscribers: Math.floor(point.views / 100), estimatedRevenue: point.views / 100 }
+            },
+            thumbnailMetrics: { impressions: point.impressions, clickThroughRate: point.clicks / point.impressions * 100 }
+          };
+        }
+      };
+      const applied = [];
+      const publishing = {
+        applyVideoPackaging: async (videoId, packaging) => applied.push({ videoId, ...packaging })
+      };
+      let clock = Date.now();
+      const service = new GrowthExperimentService(db, analytics, publishing, { now: () => new Date(clock) });
+      let experiment = await service.create({ productionId, armDurationHours: 24, minImpressions: 100 });
+      if (experiment.status !== 'draft' || experiment.arms.length !== 3 || !experiment.arms[0].isControl) {
+        throw new Error('Experiment plan did not persist a control and complete variant arms');
+      }
+
+      let confirmationBlocked = false;
+      try { await service.approve(experiment.id); } catch (error) { confirmationBlocked = error.code === 'EXPERIMENT_CONFIRMATION_REQUIRED'; }
+      if (!confirmationBlocked) throw new Error('Experiment approval did not require explicit confirmation');
+      experiment = await service.approve(experiment.id, { confirmed: true });
+      experiment = await service.start(experiment.id, { confirmed: true });
+      if (experiment.status !== 'running' || applied.length !== 1) throw new Error('Approved experiment did not start on its control arm');
+
+      for (let index = 0; index < 3; index++) {
+        clock += 24 * 3600000;
+        experiment = await service.refresh(experiment.id);
+      }
+      if (
+        experiment.status !== 'awaiting_winner' || !experiment.winningArmId ||
+        experiment.arms.find(arm => arm.id === experiment.winningArmId)?.label !== 'Clear benefit' ||
+        experiment.result.guardrails.passed !== true || applied.at(-1).title !== 'Control title'
+      ) {
+        throw new Error('Experiment did not select an evidence-backed winner and restore the control');
+      }
+
+      experiment = await service.adoptWinner(experiment.id, { confirmed: true });
+      const learned = (await db.listLearningRecommendations({ status: 'approved', limit: 20 }))
+        .find(item => item.evidence?.experimentId === experiment.id);
+      if (experiment.status !== 'adopted' || !learned || applied.at(-1).title !== 'A Clearer Automation Benefit') {
+        throw new Error('Winner adoption did not update packaging and approve the resulting learning');
+      }
+
+      const storedSamples = await db.listExperimentSamples(experiment.id);
+      if (storedSamples.length < 6 || storedSamples.some(sample => !Number.isFinite(sample.metrics.impressions))) {
+        throw new Error('Experiment evidence samples were not durably stored');
+      }
+    } finally {
+      await db.close();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+
+    this.logger.info('Controlled Growth Experiments Studio test completed successfully');
   }
 
   async testOutcomeROIStudio() {
@@ -2933,6 +3070,28 @@ class SystemTest {
     }
     const noService = new DailyAutomation({}, fakeDb, { generateContent: async () => {} });
     await noService.collectAudienceEngagement(); // must be a silent no-op, not a crash
+  }
+
+  async testGrowthExperimentRefreshSchedule() {
+    const events = [];
+    let refreshes = 0;
+    const scheduler = new DailyAutomation({}, {}, {
+      experiments: {
+        refreshDue: async () => {
+          refreshes++;
+          return { running: 2, refreshed: 1, failed: 0 };
+        }
+      }
+    });
+    scheduler.logAutomationEvent = async (type, status, data) => events.push({ type, status, data });
+    await scheduler.refreshGrowthExperiments();
+    if (refreshes !== 1 || !events.some(event =>
+      event.type === 'growth_experiment_refresh' && event.status === 'success' && event.data.refreshed === 1
+    )) {
+      throw new Error('The scheduler did not refresh and record due controlled experiments');
+    }
+    const noService = new DailyAutomation({}, {}, {});
+    await noService.refreshGrowthExperiments();
   }
 }
 

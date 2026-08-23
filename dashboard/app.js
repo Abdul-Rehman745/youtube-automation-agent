@@ -139,6 +139,7 @@ function renderDashboard() {
   renderCalendar(state.schedule);
   renderIdeas(state.ideas);
   renderAnalytics(state.analytics, state.learning);
+  renderGrowthExperiments(state.experiments || {});
   renderEngagement(ui.state.engagement || {});
   renderActivation(state.activation);
   renderReadiness(state.readiness);
@@ -405,6 +406,49 @@ function renderLearning(learning = {}) {
         </span>
       </div>
     </article>`).join('') : empty('No recommendation yet. Lumen needs at least two real, sufficiently exposed measurements.');
+}
+
+function renderGrowthExperiments(summary = {}) {
+  const experiments = Array.isArray(summary.experiments) ? summary.experiments : [];
+  const candidates = Array.isArray(summary.candidates) ? summary.candidates : [];
+  const candidate = $('#experiment-candidate');
+  const create = $('#experiment-create-button');
+  candidate.innerHTML = candidates.length
+    ? candidates.map(item => `<option value="${escapeHTML(item.productionId)}">${escapeHTML(item.title || item.productionId)}</option>`).join('')
+    : '<option value="">No eligible published variants</option>';
+  candidate.disabled = !candidates.length;
+  create.disabled = !candidates.length;
+  $('#experiment-status').textContent = `${Number(summary.activeCount || 0)} running · ${Number(summary.awaitingDecisionCount || 0)} decision${Number(summary.awaitingDecisionCount || 0) === 1 ? '' : 's'}`;
+  $('#experiment-policy').textContent = summary.evidencePolicy || 'Only real YouTube evidence advances controlled tests.';
+
+  $('#growth-experiments').innerHTML = experiments.length ? experiments.map(experiment => {
+    const winner = experiment.arms?.find(arm => arm.id === experiment.winningArmId);
+    const actions = [];
+    if (experiment.status === 'draft') actions.push(`<button class="text-button approve" data-experiment-action="approve" data-experiment-id="${escapeHTML(experiment.id)}">Approve plan</button>`);
+    if (experiment.status === 'approved') actions.push(`<button class="button primary small" data-experiment-action="start" data-experiment-id="${escapeHTML(experiment.id)}">Start live test</button>`);
+    if (experiment.status === 'running') {
+      actions.push(`<button class="button secondary small" data-experiment-action="refresh" data-experiment-id="${escapeHTML(experiment.id)}">Refresh evidence</button>`);
+      actions.push(`<button class="text-button" data-experiment-action="cancel" data-experiment-id="${escapeHTML(experiment.id)}">Cancel &amp; restore control</button>`);
+    }
+    if (experiment.status === 'action_required') actions.push(`<button class="text-button" data-experiment-action="cancel" data-experiment-id="${escapeHTML(experiment.id)}">Retry control restore</button>`);
+    if (experiment.status === 'awaiting_winner') actions.push(`<button class="button primary small" data-experiment-action="adopt" data-experiment-id="${escapeHTML(experiment.id)}">Adopt ${escapeHTML(winner?.label || 'winner')}</button>`);
+    const arms = (experiment.arms || []).map(arm => {
+      const result = arm.result || {};
+      const active = arm.id === experiment.currentArmId && experiment.status === 'running';
+      return `<div class="experiment-arm ${active ? 'active' : ''} ${arm.id === experiment.winningArmId ? 'winner' : ''}">
+        <div><strong>${escapeHTML(arm.label)}</strong>${arm.isControl ? '<small>Control</small>' : ''}</div>
+        <span>${escapeHTML(arm.title)}</span>
+        <div class="experiment-arm-metrics"><b>${Number(result.ctr || 0).toFixed(2)}% CTR</b><small>${Number(result.impressions || 0).toLocaleString()} impressions</small></div>
+      </div>`;
+    }).join('');
+    return `<article class="growth-experiment-card">
+      <div class="learning-card-heading"><strong>${escapeHTML(experiment.title)}</strong>${statusChip(experiment.status)}</div>
+      <p>${escapeHTML(experiment.hypothesis)}</p>
+      <div class="experiment-arm-list">${arms}</div>
+      ${experiment.result?.reason ? `<p class="experiment-result"><strong>Result:</strong> ${escapeHTML(experiment.result.reason)}${experiment.result.liftPercent !== undefined ? ` · ${escapeHTML(experiment.result.liftPercent)}% lift` : ''}</p>` : ''}
+      <div class="learning-meta"><span>${Number(experiment.armDurationHours || 0)}h per arm · ${Number(experiment.minImpressions || 0).toLocaleString()} minimum impressions</span><span class="learning-actions">${actions.join('')}</span></div>
+    </article>`;
+  }).join('') : empty('Publish content with approved-learning title and thumbnail variants to create the first controlled test.');
 }
 
 function renderRetention(retention = {}) {
@@ -1166,6 +1210,27 @@ document.addEventListener('click', async event => {
     await mutate(`/api/learning/recommendations/${encodeURIComponent(id)}/${action}`, 'POST', {}, message).catch(() => {});
   }
 
+  const experiment = event.target.closest('[data-experiment-action]');
+  if (experiment) {
+    const action = experiment.dataset.experimentAction;
+    const id = experiment.dataset.experimentId;
+    const prompts = {
+      approve: 'Approve this complete experiment plan? This does not change YouTube yet.',
+      start: 'Start this live test? Lumen will rotate only the approved arms and restore the control before asking you to adopt a winner.',
+      adopt: 'Adopt the evidence-backed winner on YouTube and approve its learning for future plans?',
+      cancel: 'Cancel this experiment and restore the control title and thumbnail?'
+    };
+    if (prompts[action] && !confirm(prompts[action])) return;
+    const messages = {
+      approve: 'Experiment plan approved.',
+      start: 'Controlled experiment started.',
+      refresh: 'Experiment evidence refreshed.',
+      adopt: 'Winner adopted and approved for future planning.',
+      cancel: 'Experiment cancelled and control restored.'
+    };
+    await mutate(`/api/experiments/${encodeURIComponent(id)}/${action}`, 'POST', prompts[action] ? { confirmed: true } : {}, messages[action]).catch(() => {});
+  }
+
   const refreshRetention = event.target.closest('#refresh-retention-button');
   if (refreshRetention?.dataset.videoId) {
     refreshRetention.disabled = true;
@@ -1470,6 +1535,16 @@ $('#generate-button').addEventListener('click', () => $('#generate-dialog').show
 $('#add-idea-button').addEventListener('click', () => $('#idea-dialog').showModal());
 $('#refresh-button').addEventListener('click', () => refreshDashboard());
 $('#pipeline-filter').addEventListener('change', () => renderPipeline(ui.state?.pipeline || []));
+
+$('#experiment-create-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const values = Object.fromEntries(new FormData(event.currentTarget));
+  await mutate('/api/experiments', 'POST', {
+    productionId: values.productionId,
+    armDurationHours: Number(values.armDurationHours),
+    minImpressions: Number(values.minImpressions)
+  }, 'Draft growth experiment created for review.').catch(() => {});
+});
 
 $('#run-readiness-button').addEventListener('click', async event => {
   const button = event.currentTarget;

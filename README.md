@@ -10,6 +10,11 @@ Research topics → write scripts → generate narration and visuals → assembl
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js 18+](https://img.shields.io/badge/node-18%2B-43853d.svg)](package.json)
 
+## What's new on master
+
+- **Controlled Growth Experiments Studio:** turn an approved packaging recommendation into a durable control and variant test, rotate only the explicitly approved arms, measure real interval evidence, restore the control, and separately approve an evidence-backed winner.
+- **Outcome & ROI Studio:** align the operator with a measurable KPI, target window, and budget while keeping missing revenue and cost evidence explicit.
+
 ## What's new in v2.9.0
 
 **The agent now listens to your audience.** Until this release the feedback loop was numbers only — click-through, retention, watch time. It said how people watched, never what they wanted. v2.9.0 closes that gap and rounds out the repairable, provider-flexible, multi-format production workflow:
@@ -117,6 +122,14 @@ After publication, Lumen captures comparable 24-hour and 7-day performance snaps
 Open **Analytics → What the agent learned** to review the evidence and confidence behind each recommendation. Pending or rejected recommendations never influence generation. Once you approve one, the next Autonomous Channel Operator run includes it as an explicit planning constraint. Simulated analytics fallbacks are stored as unverified and are never eligible for baselines or recommendations.
 
 When an approved learning calls for better packaging, Lumen prepares a control plus title and thumbnail variants for new videos. Review Studio shows those options before approval; the selected combination is the only one handed to the publishing queue. Lumen does not silently swap live YouTube metadata.
+
+### Prove a growth recommendation
+
+Open **Analytics → Controlled Growth Experiments** after a video with approved-learning packaging variants is published. Create a draft plan with a 24–168 hour window per arm and a minimum-impressions threshold, review the exact title and thumbnail combinations, then separately approve and start the live test.
+
+Lumen records a cumulative analytics sample before and after each arm and evaluates only the interval delta. Every arm must reach the configured impression and click floor. The leading CTR must clear a 95% evidence threshold without a material retention regression or traffic-source shift; otherwise the result is explicitly **inconclusive**. Simulated analytics never advance an experiment.
+
+Arm rotations are limited to the plan you approved. After the final arm, Lumen restores the control title and thumbnail before presenting the result. Applying the winner is a separate confirmation; only then does the validated packaging pattern become an approved learning for future Autonomous Operator runs. Experiment state and evidence are stored in SQLite so restarts do not erase progress.
 
 ### Align the channel with outcomes and ROI
 
@@ -406,6 +419,17 @@ curl http://localhost:3456/api/outcomes
 # approve an evidence-backed learning for future autonomous plans
 curl -X POST http://localhost:3456/api/learning/recommendations/:recommendationId/approve \
   -H "x-api-key: $API_KEY"
+
+# inspect controlled experiments and eligible published videos
+curl http://localhost:3456/api/experiments
+
+# create and approve a packaging test plan (start/adopt are separate confirmed actions)
+curl -X POST http://localhost:3456/api/experiments \
+  -H "Content-Type: application/json" -H "x-api-key: $API_KEY" \
+  -d '{"productionId":"production-id","armDurationHours":48,"minImpressions":1000}'
+curl -X POST http://localhost:3456/api/experiments/:experimentId/approve \
+  -H "Content-Type: application/json" -H "x-api-key: $API_KEY" \
+  -d '{"confirmed":true}'
 
 # inspect, edit, and approve content before scheduling
 curl http://localhost:3456/api/content/:contentId

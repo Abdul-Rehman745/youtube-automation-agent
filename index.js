@@ -24,6 +24,7 @@ const { ProvenanceService } = require('./utils/provenance-service');
 const { SceneRepairService } = require('./utils/scene-repair-service');
 const { ShortsRepurposingService } = require('./utils/shorts-repurposing-service');
 const { AudienceEngagementService } = require('./utils/audience-engagement-service');
+const { GrowthExperimentService } = require('./utils/growth-experiment-service');
 const { AITextService } = require('./utils/ai-text-service');
 const { version } = require('./package.json');
 const chalk = require('chalk');
@@ -47,6 +48,7 @@ class YouTubeAutomationAgent {
     this.scenes = null;
     this.shorts = null;
     this.engagement = null;
+    this.experiments = null;
     this.setupRequired = false;
   }
 
@@ -110,6 +112,12 @@ class YouTubeAutomationAgent {
         new AITextService(this.credentials?.credentials || {}),
         { logger: this.logger }
       );
+      this.experiments = new GrowthExperimentService(
+        this.db,
+        this.agents.analytics,
+        this.agents.publishing,
+        { logger: this.logger }
+      );
 
       // Show which pipeline stages will run for real vs. be simulated
       const capabilities = await this.logCapabilitySummary();
@@ -124,7 +132,8 @@ class YouTubeAutomationAgent {
       this.logger.info('Setting up automation scheduler...');
       this.scheduler = new DailyAutomation(this.agents, this.db, {
         generateContent: input => this.queueScheduledContent(input),
-        engagement: this.engagement
+        engagement: this.engagement,
+        experiments: this.experiments
       });
       await this.scheduler.initialize();
 
@@ -462,7 +471,7 @@ class YouTubeAutomationAgent {
 
     this.app.get('/api/dashboard', async (_req, res) => {
       try {
-        const [stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics, learning, activation, channelStrategy, operatorRuns, readiness, engagement] = await Promise.all([
+        const [stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics, learning, activation, channelStrategy, operatorRuns, readiness, engagement, experiments] = await Promise.all([
           this.db.getStats(),
           this.db.listGenerationJobs(20),
           this.db.getPipelineOverview(50),
@@ -493,12 +502,15 @@ class YouTubeAutomationAgent {
                 pendingAudienceIdeas: 0, postingEnabled: false, postingDisabledReason: 'setup_required',
                 insights: [], recentThemes: [],
                 evidencePolicy: 'Comments are fetched read-only from YouTube. Replies post only after operator approval, and fallback analysis never proposes drafts or ideas.'
-              })
+              }),
+          this.experiments
+            ? this.experiments.getSummary()
+            : Promise.resolve({ experiments: [], candidates: [], activeCount: 0, awaitingDecisionCount: 0, evidencePolicy: 'Finish setup to create a controlled growth experiment.' })
         ]);
         if (this.telemetry) void this.telemetry.sync(activation);
         res.json({
           stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics, learning, activation,
-          channelStrategy, operatorRuns, readiness, engagement,
+          channelStrategy, operatorRuns, readiness, engagement, experiments,
           system: {
             initialized: this.isInitialized,
             setupRequired: this.setupRequired,
@@ -944,6 +956,52 @@ class YouTubeAutomationAgent {
         data: { recommendationId, status }
       });
       return res.json({ success: true, result: recommendation });
+    });
+
+    this.app.get('/api/experiments', async (_req, res) => {
+      try {
+        const summary = this.experiments
+          ? await this.experiments.getSummary()
+          : { experiments: [], candidates: [], activeCount: 0, awaitingDecisionCount: 0 };
+        return res.json({ success: true, result: summary });
+      } catch (error) {
+        return res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    this.app.post('/api/experiments', protect, async (req, res) => {
+      try {
+        if (!this.experiments) return res.status(503).json({ error: 'Finish setup before creating experiments' });
+        const experiment = await this.experiments.create(req.body || {});
+        return res.status(201).json({ success: true, result: experiment });
+      } catch (error) {
+        return res.status(error.status || 400).json({ success: false, error: error.message, code: error.code });
+      }
+    });
+
+    this.app.post('/api/experiments/:experimentId/:action', protect, async (req, res) => {
+      try {
+        if (!this.experiments) return res.status(503).json({ error: 'Finish setup before controlling experiments' });
+        const actions = {
+          approve: () => this.experiments.approve(req.params.experimentId, req.body),
+          start: () => this.experiments.start(req.params.experimentId, req.body),
+          refresh: () => this.experiments.refresh(req.params.experimentId),
+          adopt: () => this.experiments.adoptWinner(req.params.experimentId, req.body),
+          cancel: () => this.experiments.cancel(req.params.experimentId, req.body)
+        };
+        if (!actions[req.params.action]) return res.status(400).json({ error: 'Unsupported experiment action' });
+        const experiment = await actions[req.params.action]();
+        await this.operator.notify({
+          type: 'growth_experiment_updated',
+          level: ['adopt', 'approve'].includes(req.params.action) ? 'success' : 'info',
+          title: `Growth experiment ${req.params.action}`,
+          message: experiment.title,
+          data: { experimentId: experiment.id, status: experiment.status }
+        });
+        return res.json({ success: true, result: experiment });
+      } catch (error) {
+        return res.status(error.status || 400).json({ success: false, error: error.message, code: error.code });
+      }
     });
 
     this.app.get('/api/retention/:videoId', async (req, res) => {

@@ -160,6 +160,20 @@
             <div id="learning-recommendations" class="learning-list"></div>
           </article>
         </div>
+        <article class="panel growth-experiment-studio">
+          <div class="panel-heading experiment-heading">
+            <div><p class="eyebrow">CONTROLLED GROWTH EXPERIMENTS</p><h2>Prove the next move</h2><p>Run approved title and thumbnail arms against real YouTube evidence, then separately approve the winner.</p></div>
+            <span id="experiment-status" class="status">0 running</span>
+          </div>
+          <form id="experiment-create-form" class="experiment-create-form">
+            <label><span>Published production</span><select name="productionId" id="experiment-candidate" required></select></label>
+            <label><span>Hours per arm</span><select name="armDurationHours"><option value="24">24 hours</option><option value="48" selected>48 hours</option><option value="72">72 hours</option></select></label>
+            <label><span>Minimum impressions</span><input name="minImpressions" type="number" min="100" max="1000000" step="100" value="1000" required></label>
+            <button id="experiment-create-button" class="button secondary small" type="submit">Create test plan</button>
+          </form>
+          <div id="growth-experiments" class="growth-experiment-list"></div>
+          <p id="experiment-policy" class="callout"></p>
+        </article>
         <article class="panel retention-studio">
           <div class="panel-heading retention-heading">
             <div><p class="eyebrow">SCENE-AWARE RETENTION</p><h2>Where viewers stay—and leave</h2><p>Real YouTube retention points mapped onto the exact production timeline.</p></div>
