@@ -107,7 +107,7 @@ class YouTubeAutomationAgent {
       this.engagement = new AudienceEngagementService(
         this.db,
         this.credentials,
-        new AITextService(this.credentials),
+        new AITextService(this.credentials?.credentials || {}),
         { logger: this.logger }
       );
 
@@ -948,10 +948,12 @@ class YouTubeAutomationAgent {
       }
     });
 
+    const ENGAGEMENT_VIDEO_ID = /^[A-Za-z0-9_-]{1,100}$/;
+
     this.app.get('/api/engagement/:videoId', async (req, res) => {
       try {
         const videoId = String(req.params.videoId || '').trim();
-        if (!/^[A-Za-z0-9_-]{1,100}$/.test(videoId)) {
+        if (!ENGAGEMENT_VIDEO_ID.test(videoId)) {
           return res.status(400).json({ error: 'A valid YouTube video ID is required' });
         }
         const [insight, comments, drafts] = await Promise.all([
@@ -969,7 +971,7 @@ class YouTubeAutomationAgent {
       try {
         if (!this.engagement) return res.status(503).json({ error: 'Audience engagement requires completed setup' });
         const videoId = String(req.params.videoId || '').trim();
-        if (!/^[A-Za-z0-9_-]{1,100}$/.test(videoId)) {
+        if (!ENGAGEMENT_VIDEO_ID.test(videoId)) {
           return res.status(400).json({ error: 'A valid YouTube video ID is required' });
         }
         const sync = await this.engagement.syncVideoComments(videoId, req.body || {});
@@ -985,7 +987,11 @@ class YouTubeAutomationAgent {
     this.app.post('/api/engagement/:videoId/draft-replies', protect, async (req, res) => {
       try {
         if (!this.engagement) return res.status(503).json({ error: 'Audience engagement requires completed setup' });
-        const result = await this.engagement.draftReplies(String(req.params.videoId || '').trim(), req.body || {});
+        const videoId = String(req.params.videoId || '').trim();
+        if (!ENGAGEMENT_VIDEO_ID.test(videoId)) {
+          return res.status(400).json({ error: 'A valid YouTube video ID is required' });
+        }
+        const result = await this.engagement.draftReplies(videoId, req.body || {});
         return res.json({ success: true, result });
       } catch (error) {
         return res.status(error.status || 400).json({ success: false, error: error.message, code: error.code });
@@ -1006,13 +1012,18 @@ class YouTubeAutomationAgent {
       try {
         if (!this.engagement) return res.status(503).json({ error: 'Audience engagement requires completed setup' });
         const result = await this.engagement.approveReplyDraft(req.params.draftId, req.body || {});
-        await this.operator.notify({
-          type: 'audience_reply_posted',
-          level: 'success',
-          title: 'Audience reply posted',
-          message: `A reply was posted on video ${result.videoId}`,
-          data: { draftId: result.id, videoId: result.videoId, postedCommentId: result.postedCommentId }
-        });
+        // The reply is already live on YouTube; a notification failure must not report an error.
+        try {
+          await this.operator.notify({
+            type: 'audience_reply_posted',
+            level: 'success',
+            title: 'Audience reply posted',
+            message: `A reply was posted on video ${result.videoId}`,
+            data: { draftId: result.id, videoId: result.videoId, postedCommentId: result.postedCommentId }
+          });
+        } catch (notifyError) {
+          this.logger.warn(`Posted reply notification failed: ${notifyError.message}`);
+        }
         return res.json({ success: true, result });
       } catch (error) {
         return res.status(error.status || 400).json({ success: false, error: error.message, code: error.code });

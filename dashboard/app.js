@@ -454,7 +454,9 @@ function renderEngagementDetail() {
   const commentsById = new Map((detail.comments || []).map(comment => [comment.commentId, comment]));
   const postingEnabled = ui.state?.engagement?.postingEnabled === true;
   const drafts = (detail.drafts || []).filter(draft => draft.status !== 'discarded');
-  $('#engagement-drafts').innerHTML = drafts.length ? drafts.map(draft => {
+  const draftsContainer = $('#engagement-drafts');
+  // The 8s poll must not wipe a reply the operator is actively editing.
+  const draftsHTML = drafts.length ? drafts.map(draft => {
     const comment = commentsById.get(draft.commentId) || {};
     const locked = draft.status === 'posted';
     return `
@@ -470,6 +472,7 @@ function renderEngagementDetail() {
       </div>
     </article>`;
   }).join('') : empty('No reply drafts for this video yet.');
+  if (!draftsContainer.contains(document.activeElement)) draftsContainer.innerHTML = draftsHTML;
 
   const attention = Array.isArray(insight.attentionFlags) ? insight.attentionFlags : [];
   $('#engagement-attention').innerHTML = attention.length ? attention.map(flag => {
@@ -478,7 +481,7 @@ function renderEngagementDetail() {
     <article class="comment-card">
       <div class="learning-card-heading"><strong>${escapeHTML((flag.categories || []).join(', '))}</strong></div>
       <p class="comment-original">${escapeHTML(comment.text || '')}</p>
-      <a class="text-button" href="${escapeHTML(flag.permalink || '#')}" target="_blank" rel="noopener noreferrer">Open in YouTube Studio</a>
+      <a class="text-button" href="${escapeHTML(flag.permalink || '#')}" target="_blank" rel="noopener noreferrer">Open on YouTube</a>
     </article>`;
   }).join('') : empty('Nothing flagged as spam, scam, or toxic.');
 }
@@ -1154,6 +1157,7 @@ document.addEventListener('click', async event => {
   if (replyApprove) {
     const card = replyApprove.closest('[data-reply-card]');
     const text = card?.querySelector('[data-reply-text]')?.value || '';
+    if (!text.trim()) return showToast('Reply text is empty.', 'error');
     if (confirm(`Post this reply to YouTube?\n\n${text}`)) {
       await mutate(`/api/engagement/replies/${encodeURIComponent(replyApprove.dataset.replyApprove)}/approve`, 'POST', { confirmed: true, editedText: text }, 'Reply posted to YouTube.').catch(() => {});
       ui.engagementDetail = null;

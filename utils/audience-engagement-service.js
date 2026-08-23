@@ -16,6 +16,7 @@ class AudienceEngagementService {
     this.maxCommentsPerAnalysis = Number(options.maxCommentsPerAnalysis || 200);
     this.maxDraftsPerRun = Number(options.maxDraftsPerRun || 10);
     this.dailyReplyCap = Number(options.dailyReplyCap || process.env.ENGAGEMENT_DAILY_REPLY_CAP || 50);
+    this.syncDelayMs = Number(options.syncDelayMs ?? 2000);
     this.listCommentThreads = options.listCommentThreads || (params => this.defaultListCommentThreads(params));
     this.insertComment = options.insertComment || (params => this.defaultInsertComment(params));
     this.getChannelId = options.getChannelId || (() => this.defaultGetChannelId());
@@ -113,6 +114,9 @@ class AudienceEngagementService {
 
   // Watermark is keyed on top-level publish time (order=time is newest-first);
   // new replies inside old threads are only picked up when their thread re-enters a page.
+  // A first sync of a video with more comments than maxCommentsPerSync stops at the cap but
+  // still records the newest comment as the watermark, so the older backlog beyond that cap is
+  // never backfilled by later runs.
   async syncVideoComments(videoId, meta = {}) {
     const existing = await this.db.getEngagementInsight(videoId);
     const watermark = existing?.newestCommentAt ? new Date(existing.newestCommentAt) : null;
@@ -206,9 +210,11 @@ Comments: ${JSON.stringify(payload)}`;
         title: String(theme?.title || '').slice(0, 120).trim(),
         summary: String(theme?.summary || '').slice(0, 300).trim(),
         kind: THEME_KINDS.includes(theme?.kind) ? theme.kind : 'feedback',
-        commentIds: (Array.isArray(theme?.commentIds) ? theme.commentIds : [])
-          .filter(id => known.has(id))
-          .filter(id => !(perComment.get(id)?.flags || []).some(flag => QUARANTINE_FLAGS.includes(flag)))
+        commentIds: [...new Set(
+          (Array.isArray(theme?.commentIds) ? theme.commentIds : [])
+            .filter(id => known.has(id))
+            .filter(id => !(perComment.get(id)?.flags || []).some(flag => QUARANTINE_FLAGS.includes(flag)))
+        )]
       }))
       .filter(theme => theme.title && theme.commentIds.length >= 2)
       .slice(0, 8)
@@ -226,8 +232,17 @@ Comments: ${JSON.stringify(payload)}`;
   }
 
   async analyzeVideo(videoId) {
-    const comments = (await this.db.listAudienceComments({ videoId, limit: this.maxCommentsPerAnalysis }))
-      .filter(comment => !comment.isChannelOwner);
+    // Top-level comments claim the analysis budget first; replies fill any remaining room.
+    const selected = await this.db.listAudienceComments({ videoId, topLevelOnly: true, limit: this.maxCommentsPerAnalysis });
+    if (selected.length < this.maxCommentsPerAnalysis) {
+      const seen = new Set(selected.map(comment => comment.commentId));
+      const all = await this.db.listAudienceComments({ videoId, limit: this.maxCommentsPerAnalysis });
+      for (const comment of all) {
+        if (selected.length >= this.maxCommentsPerAnalysis) break;
+        if (!seen.has(comment.commentId)) selected.push(comment);
+      }
+    }
+    const comments = selected.filter(comment => !comment.isChannelOwner);
     if (!comments.length) return this.db.getEngagementInsight(videoId);
 
     let analysis;
@@ -345,6 +360,10 @@ Comments: ${JSON.stringify(payload)}`;
         results.skipped++;
         continue;
       }
+      // Space out API calls once a sweep is already underway, matching the analytics sweep.
+      if (results.synced + results.failed > 0 && this.syncDelayMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, this.syncDelayMs));
+      }
       try {
         const outcome = await this.syncVideoComments(videoId, video);
         results.synced++;
@@ -422,7 +441,7 @@ Comments: ${JSON.stringify(payload)}`;
     for (const entry of Array.isArray(entries) ? entries : []) {
       const target = byId.get(entry?.commentId);
       const text = String(entry?.reply || '').trim().slice(0, 1000);
-      if (!target || !text || /https?:\/\//i.test(text)) continue;
+      if (!target || !text || /(https?:\/\/|www\.)/i.test(text)) continue;
       drafts.push(await this.db.saveReplyDraft({
         commentId: target.commentId,
         videoId,

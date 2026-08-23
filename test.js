@@ -58,6 +58,7 @@ class SystemTest {
       { name: 'Audience Idea Mining', test: () => this.testAudienceIdeaMining() },
       { name: 'Reply Drafting', test: () => this.testReplyDrafting() },
       { name: 'Reply Approval and Posting', test: () => this.testReplyApprovalAndPosting() },
+      { name: 'Engagement AI Provider Wiring', test: () => this.testEngagementAIProviderWiring() },
       { name: 'Engagement Sync Schedule', test: () => this.testEngagementSyncSchedule() }
     ];
 
@@ -2786,6 +2787,35 @@ class SystemTest {
       await db.executeQuery('DELETE FROM reply_drafts WHERE video_id = ?', [videoId]);
       await db.executeQuery('DELETE FROM engagement_insights WHERE video_id = ?', [videoId]);
       await db.close();
+    }
+  }
+
+  async testEngagementAIProviderWiring() {
+    const { AITextService } = require('./utils/ai-text-service');
+
+    // Regression: index.js must hand AITextService the unwrapped credentials object
+    // (manager.credentials), the shape the walkthrough writes to credentials.json.
+    // Passing the CredentialManager itself leaves the engagement studio permanently
+    // in fallback mode on installs with no provider environment variables.
+    const savedEnv = process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+    try {
+      const configured = new AITextService({
+        aiProvider: { provider: 'openai', apiKey: 'test-key', model: 'gpt-5.6' }
+      });
+      if (!configured.isAvailable()) {
+        throw new Error('AITextService must initialize from a credentials-file aiProvider config');
+      }
+
+      const wrapped = new AITextService({
+        credentials: { aiProvider: { provider: 'openai', apiKey: 'test-key', model: 'gpt-5.6' } }
+      });
+      if (wrapped.isAvailable()) {
+        throw new Error('A CredentialManager-shaped argument must not look configured; index.js has to unwrap it');
+      }
+    } finally {
+      if (savedEnv === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = savedEnv;
     }
   }
 
