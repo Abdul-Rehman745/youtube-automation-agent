@@ -214,6 +214,23 @@ class Database {
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       )`,
+      `CREATE TABLE IF NOT EXISTS engagement_insights (
+        id TEXT PRIMARY KEY,
+        video_id TEXT NOT NULL UNIQUE,
+        production_id TEXT,
+        title TEXT,
+        comment_count INTEGER DEFAULT 0,
+        analyzed_count INTEGER DEFAULT 0,
+        sentiment TEXT NOT NULL DEFAULT '{}',
+        themes TEXT NOT NULL DEFAULT '[]',
+        attention_flags TEXT NOT NULL DEFAULT '[]',
+        analysis_method TEXT DEFAULT 'ai',
+        analyzed_at TEXT,
+        last_synced_at TEXT,
+        newest_comment_at TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`,
 
       // Keywords Performance
       `CREATE TABLE IF NOT EXISTS keyword_performance (
@@ -1980,6 +1997,80 @@ class Database {
       flags: JSON.parse(row.flags || '[]'),
       analysisState: row.analysis_state,
       repliedByAgent: Boolean(row.replied_by_agent)
+    };
+  }
+
+  async saveEngagementInsight(insight) {
+    const existing = await this.getEngagementInsight(insight.videoId);
+    const merged = { ...(existing || {}), ...insight };
+    const id = existing?.id || this.generateId('insight');
+    await this.executeQuery(
+      `INSERT INTO engagement_insights (
+        id, video_id, production_id, title, comment_count, analyzed_count,
+        sentiment, themes, attention_flags, analysis_method, analyzed_at,
+        last_synced_at, newest_comment_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(video_id) DO UPDATE SET
+        production_id = excluded.production_id,
+        title = excluded.title,
+        comment_count = excluded.comment_count,
+        analyzed_count = excluded.analyzed_count,
+        sentiment = excluded.sentiment,
+        themes = excluded.themes,
+        attention_flags = excluded.attention_flags,
+        analysis_method = excluded.analysis_method,
+        analyzed_at = excluded.analyzed_at,
+        last_synced_at = excluded.last_synced_at,
+        newest_comment_at = excluded.newest_comment_at,
+        updated_at = CURRENT_TIMESTAMP`,
+      [
+        id,
+        insight.videoId,
+        merged.productionId || null,
+        merged.title || null,
+        Number(merged.commentCount || 0),
+        Number(merged.analyzedCount || 0),
+        JSON.stringify(merged.sentiment || {}),
+        JSON.stringify(merged.themes || []),
+        JSON.stringify(merged.attentionFlags || []),
+        merged.analysisMethod || 'ai',
+        merged.analyzedAt || null,
+        merged.lastSyncedAt || null,
+        merged.newestCommentAt || null
+      ]
+    );
+    return this.getEngagementInsight(insight.videoId);
+  }
+
+  async getEngagementInsight(videoId) {
+    const row = await this.getRow('SELECT * FROM engagement_insights WHERE video_id = ?', [videoId]);
+    return this.parseEngagementInsight(row);
+  }
+
+  async listEngagementInsights(options = {}) {
+    const limit = Math.max(1, Math.min(50, Number(options.limit || 12)));
+    const rows = await this.getAllRows(
+      'SELECT * FROM engagement_insights ORDER BY updated_at DESC LIMIT ?',
+      [limit]
+    );
+    return rows.map(row => this.parseEngagementInsight(row));
+  }
+
+  parseEngagementInsight(row) {
+    if (!row) return null;
+    return {
+      ...row,
+      videoId: row.video_id,
+      productionId: row.production_id,
+      commentCount: Number(row.comment_count || 0),
+      analyzedCount: Number(row.analyzed_count || 0),
+      sentiment: JSON.parse(row.sentiment || '{}'),
+      themes: JSON.parse(row.themes || '[]'),
+      attentionFlags: JSON.parse(row.attention_flags || '[]'),
+      analysisMethod: row.analysis_method,
+      analyzedAt: row.analyzed_at,
+      lastSyncedAt: row.last_synced_at,
+      newestCommentAt: row.newest_comment_at
     };
   }
 

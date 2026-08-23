@@ -47,7 +47,8 @@ class SystemTest {
       { name: 'Directory Structure', test: () => this.testDirectories() },
       { name: 'Agent Loading', test: () => this.testAgentLoading() },
       { name: 'Configuration Files', test: () => this.testConfiguration() },
-      { name: 'Audience Comment Store', test: () => this.testAudienceCommentStore() }
+      { name: 'Audience Comment Store', test: () => this.testAudienceCommentStore() },
+      { name: 'Engagement Insight Store', test: () => this.testEngagementInsightStore() }
     ];
 
     let passed = 0;
@@ -2290,6 +2291,38 @@ class SystemTest {
     }
 
     this.logger.info('Agent loading test completed successfully');
+  }
+
+  async testEngagementInsightStore() {
+    const db = new Database();
+    await db.initialize();
+    const videoId = `vid_insight_${Date.now()}`;
+    try {
+      const synced = await db.saveEngagementInsight({
+        videoId, title: 'Test video', commentCount: 4,
+        lastSyncedAt: '2026-08-23T10:00:00.000Z',
+        newestCommentAt: '2026-08-23T09:00:00.000Z'
+      });
+      if (!synced || synced.videoId !== videoId) throw new Error('saveEngagementInsight did not store the row');
+
+      const analyzed = await db.saveEngagementInsight({
+        videoId, analyzedCount: 4,
+        sentiment: { method: 'ai', positive: 3, neutral: 1, negative: 0 },
+        themes: [{ title: 'Render cache questions', summary: 'Viewers ask how caching works', kind: 'question', count: 3, commentIds: ['a', 'b', 'c'] }],
+        attentionFlags: [{ commentId: 'x', categories: ['scam'], permalink: 'https://www.youtube.com/watch?v=1&lc=x' }],
+        analysisMethod: 'ai', analyzedAt: '2026-08-23T10:05:00.000Z'
+      });
+      if (analyzed.id !== synced.id) throw new Error('Insight upsert must reuse the video row, not duplicate');
+      if (analyzed.lastSyncedAt !== '2026-08-23T10:00:00.000Z') throw new Error('Merge lost the sync watermark');
+      if (analyzed.themes[0]?.count !== 3 || analyzed.sentiment.positive !== 3) throw new Error('JSON columns did not round-trip');
+      if (analyzed.attentionFlags.length !== 1) throw new Error('attention_flags did not round-trip');
+
+      const listed = await db.listEngagementInsights({ limit: 5 });
+      if (!listed.some(item => item.videoId === videoId)) throw new Error('listEngagementInsights missed the row');
+    } finally {
+      await db.executeQuery('DELETE FROM engagement_insights WHERE video_id = ?', [videoId]);
+      await db.close();
+    }
   }
 
   async testAudienceCommentStore() {
