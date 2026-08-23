@@ -1,6 +1,7 @@
 const { Database } = require('./database/db');
 const { Logger } = require('./utils/logger');
 const { CredentialManager } = require('./utils/credential-manager');
+const { AudienceEngagementService } = require('./utils/audience-engagement-service');
 const chalk = require('chalk');
 const path = require('path');
 const { ProductionReadinessService } = require('./utils/production-readiness-service');
@@ -50,7 +51,8 @@ class SystemTest {
       { name: 'Audience Comment Store', test: () => this.testAudienceCommentStore() },
       { name: 'Engagement Insight Store', test: () => this.testEngagementInsightStore() },
       { name: 'Reply Draft Lifecycle Store', test: () => this.testReplyDraftStore() },
-      { name: 'YouTube Scope Detection', test: () => this.testYouTubeScopeDetection() }
+      { name: 'YouTube Scope Detection', test: () => this.testYouTubeScopeDetection() },
+      { name: 'Audience Comment Sync', test: () => this.testAudienceCommentSync() }
     ];
 
     let passed = 0;
@@ -2452,6 +2454,78 @@ class SystemTest {
     }
 
     this.logger.info('Configuration test completed successfully');
+  }
+
+  async testAudienceCommentSync() {
+    const db = new Database();
+    await db.initialize();
+    const videoId = `vid_sync_${Date.now()}`;
+    const iso = offsetMinutes => new Date(Date.now() - offsetMinutes * 60000).toISOString();
+    const thread = (id, publishedAt, replies = []) => ({
+      id,
+      snippet: {
+        totalReplyCount: replies.length,
+        topLevelComment: { id, snippet: {
+          textOriginal: `Comment ${id}`, authorDisplayName: 'Viewer',
+          authorChannelId: { value: 'UC_viewer' }, likeCount: 1, publishedAt, updatedAt: publishedAt
+        } }
+      },
+      replies: { comments: replies }
+    });
+    try {
+      const pages = [
+        { items: [thread(`${videoId}_c2`, iso(5)), thread(`${videoId}_c1`, iso(60), [{
+            id: `${videoId}_c1_r1`, snippet: {
+              textOriginal: 'A reply', authorDisplayName: 'Owner',
+              authorChannelId: { value: 'UC_channel_owner' }, likeCount: 0, publishedAt: iso(30), updatedAt: iso(30)
+            }
+          }]) ] }
+      ];
+      const service = new AudienceEngagementService(db, null, null, {
+        listCommentThreads: async () => pages[0],
+        getChannelId: async () => 'UC_channel_owner'
+      });
+
+      const first = await service.syncVideoComments(videoId, { title: 'Sync test' });
+      if (first.fetched !== 3) throw new Error(`Expected 3 stored comments, got ${first.fetched}`);
+      if (!first.insight?.newestCommentAt) throw new Error('Sync did not record the watermark');
+      const ownerReply = await db.getAudienceComment(`${videoId}_c1_r1`);
+      if (!ownerReply.isChannelOwner || ownerReply.parentCommentId !== `${videoId}_c1`) throw new Error('Reply mapping is wrong');
+
+      const second = await service.syncVideoComments(videoId, {});
+      if (second.fetched !== 0) throw new Error('Watermark must stop re-ingesting known comments');
+
+      // Refusal policy: API failure stores nothing and rethrows
+      const failing = new AudienceEngagementService(db, null, null, {
+        listCommentThreads: async () => { throw new Error('quota exceeded'); },
+        getChannelId: async () => 'UC_channel_owner'
+      });
+      let threw = false;
+      try { await failing.syncVideoComments(`${videoId}_other`, {}); } catch (_error) { threw = true; }
+      if (!threw) throw new Error('API failure must throw');
+      if (await db.getEngagementInsight(`${videoId}_other`)) throw new Error('A failed sync must store nothing');
+
+      // Disabled comments are not an error
+      const disabledError = new Error('disabled');
+      disabledError.errors = [{ reason: 'commentsDisabled' }];
+      const disabledService = new AudienceEngagementService(db, null, null, {
+        listCommentThreads: async () => { throw disabledError; },
+        getChannelId: async () => 'UC_channel_owner'
+      });
+      const disabled = await disabledService.syncVideoComments(`${videoId}_disabled`, {});
+      if (!disabled.disabled || disabled.fetched !== 0) throw new Error('commentsDisabled must be recorded, not thrown');
+
+      // Taper
+      if (service.isSyncDue(null, iso(0))) { /* never-synced is due */ } else throw new Error('Never-synced video must be due');
+      const fresh = { lastSyncedAt: iso(60) };
+      if (service.isSyncDue(fresh, iso(24 * 60))) throw new Error('A 1h-stale sync of a 1-day-old video is not due (4h taper)');
+      if (!service.isSyncDue({ lastSyncedAt: iso(5 * 60) }, iso(24 * 60))) throw new Error('A 5h-stale sync of a 1-day-old video is due');
+      if (service.isSyncDue({ lastSyncedAt: iso(13 * 60) }, iso(40 * 24 * 60))) throw new Error('Videos older than 30 days are never auto-due');
+    } finally {
+      await db.executeQuery("DELETE FROM audience_comments WHERE video_id LIKE ?", [`${videoId}%`]);
+      await db.executeQuery("DELETE FROM engagement_insights WHERE video_id LIKE ?", [`${videoId}%`]);
+      await db.close();
+    }
   }
 }
 
