@@ -973,3 +973,10 @@ body.scrolled .topbar { border-color: rgba(151, 167, 195, .32); }
 @media (max-width: 900px) {
   .topbar { position: static; margin-top: 4px; }
 }
+
+.engagement-grid { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); margin-bottom: 20px; }
+.engagement-policy { opacity: 0.75; font-size: 0.85rem; margin: 0 0 12px; }
+.engagement-meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 0.85rem; opacity: 0.8; margin-bottom: 12px; }
+.comment-card { border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: grid; gap: 8px; margin-bottom: 12px; }
+.comment-original { opacity: 0.8; font-size: 0.9rem; white-space: pre-wrap; margin: 0; }
+.comment-card textarea { width: 100%; min-height: 72px; resize: vertical; }

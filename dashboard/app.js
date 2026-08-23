@@ -3,7 +3,9 @@ const ui = {
   currentView: 'overview',
   refreshing: false,
   toastTimer: null,
-  retentionSnapshotId: null
+  retentionSnapshotId: null,
+  engagementVideoId: null,
+  engagementDetail: null
 };
 
 const $ = selector => document.querySelector(selector);
@@ -137,6 +139,7 @@ function renderDashboard() {
   renderCalendar(state.schedule);
   renderIdeas(state.ideas);
   renderAnalytics(state.analytics, state.learning);
+  renderEngagement(ui.state.engagement || {});
   renderActivation(state.activation);
   renderReadiness(state.readiness);
   renderOperator(state.channelStrategy, state.operatorRuns || [], { ...state.system, readiness: state.readiness });
@@ -388,6 +391,122 @@ function renderRetention(retention = {}) {
     </article>`).join('') || empty('The saved curve could not be mapped to a scene timeline.');
 }
 
+function renderEngagement(engagement = {}) {
+  $('#engagement-policy').textContent = engagement.evidencePolicy || '';
+  const posting = $('#engagement-posting-status');
+  posting.textContent = engagement.postingEnabled ? 'posting enabled' : 'posting locked';
+  posting.className = `status ${engagement.postingEnabled ? 'success' : 'warning'}`;
+  posting.title = engagement.postingEnabled ? '' : 'Re-authorize YouTube (npm run walkthrough) to grant the comment permission.';
+  $('#engagement-drafts-count').textContent = `${engagement.pendingDrafts || 0} drafts`;
+  $('#engagement-attention-count').textContent = `${engagement.needsAttentionCount || 0} flagged`;
+  $('#engagement-ideas-count').textContent = `${engagement.pendingAudienceIdeas || 0} pending`;
+
+  const insights = Array.isArray(engagement.insights) ? engagement.insights : [];
+  const select = $('#engagement-video-select');
+  if (!insights.length) {
+    ui.engagementVideoId = null;
+    ui.engagementDetail = null;
+    select.innerHTML = '<option value="">No synced videos yet</option>';
+    select.disabled = true;
+    $('#engagement-sync-button').disabled = true;
+    $('#engagement-draft-button').disabled = true;
+    $('#engagement-meta').innerHTML = '';
+    $('#engagement-themes').innerHTML = empty('Comments appear after a published video is synced.');
+    $('#engagement-drafts').innerHTML = empty('Draft replies from a synced video to review them here.');
+    $('#engagement-attention').innerHTML = empty('Nothing flagged as spam, scam, or toxic.');
+  } else {
+    if (!insights.some(item => item.videoId === ui.engagementVideoId)) ui.engagementVideoId = insights[0].videoId;
+    select.disabled = false;
+    select.innerHTML = insights.map(item => `<option value="${escapeHTML(item.videoId)}" ${item.videoId === ui.engagementVideoId ? 'selected' : ''}>${escapeHTML(item.title || item.videoId)}</option>`).join('');
+    $('#engagement-sync-button').disabled = false;
+    $('#engagement-sync-button').dataset.videoId = ui.engagementVideoId;
+    $('#engagement-draft-button').disabled = false;
+    $('#engagement-draft-button').dataset.videoId = ui.engagementVideoId;
+    renderEngagementDetail();
+  }
+  renderAudienceIdeas();
+}
+
+function renderEngagementDetail() {
+  const detail = ui.engagementDetail;
+  if (!detail || detail.insight?.videoId !== ui.engagementVideoId) {
+    loadEngagementDetail(ui.engagementVideoId);
+    return;
+  }
+  const insight = detail.insight || {};
+  const sentiment = insight.sentiment || {};
+  const fallback = insight.analysisMethod === 'fallback';
+  $('#engagement-meta').innerHTML = [
+    `${insight.commentCount || 0} comments`,
+    `${insight.analyzedCount || 0} analyzed`,
+    fallback ? 'AI analysis unavailable — mechanical facts only' : `${sentiment.positive || 0} positive · ${sentiment.neutral || 0} neutral · ${sentiment.negative || 0} negative`,
+    insight.lastSyncedAt ? `synced ${new Date(insight.lastSyncedAt).toLocaleString()}` : 'never synced'
+  ].map(item => `<span>${escapeHTML(item)}</span>`).join('');
+
+  const themes = Array.isArray(insight.themes) ? insight.themes : [];
+  $('#engagement-themes').innerHTML = themes.length ? themes.map(theme => `
+    <article class="learning-card">
+      <div class="learning-card-heading"><strong>${escapeHTML(theme.title)}</strong>${statusChip(theme.kind)}</div>
+      <p>${escapeHTML(theme.summary)}</p>
+      <div class="learning-meta"><span>${escapeHTML(String(theme.count || 0))} comments</span></div>
+    </article>`).join('') : empty(fallback ? 'Themes need a working AI text provider.' : 'No recurring themes yet.');
+
+  const commentsById = new Map((detail.comments || []).map(comment => [comment.commentId, comment]));
+  const postingEnabled = ui.state?.engagement?.postingEnabled === true;
+  const drafts = (detail.drafts || []).filter(draft => draft.status !== 'discarded');
+  $('#engagement-drafts').innerHTML = drafts.length ? drafts.map(draft => {
+    const comment = commentsById.get(draft.commentId) || {};
+    const locked = draft.status === 'posted';
+    return `
+    <article class="comment-card" data-reply-card="${escapeHTML(draft.id)}">
+      <div class="learning-card-heading"><strong>${escapeHTML(comment.authorName || 'Viewer')}</strong>${statusChip(draft.status)}</div>
+      <p class="comment-original">${escapeHTML(comment.text || '')}</p>
+      <label><span>Reply</span><textarea data-reply-text maxlength="1000" ${locked ? 'disabled' : ''}>${escapeHTML(draft.editedText || draft.draftText)}</textarea></label>
+      ${draft.failureReason ? `<p class="meta-line">Last attempt failed: ${escapeHTML(draft.failureReason)}</p>` : ''}
+      <div class="learning-actions">
+        ${locked ? '' : `<button class="button primary small" data-reply-approve="${escapeHTML(draft.id)}" ${postingEnabled ? '' : 'disabled title="Re-authorize YouTube to enable posting"'}>Approve &amp; post</button>
+        <button class="text-button" data-reply-save="${escapeHTML(draft.id)}">Save edit</button>
+        <button class="text-button danger-text" data-reply-discard="${escapeHTML(draft.id)}">Discard</button>`}
+      </div>
+    </article>`;
+  }).join('') : empty('No reply drafts for this video yet.');
+
+  const attention = Array.isArray(insight.attentionFlags) ? insight.attentionFlags : [];
+  $('#engagement-attention').innerHTML = attention.length ? attention.map(flag => {
+    const comment = commentsById.get(flag.commentId) || {};
+    return `
+    <article class="comment-card">
+      <div class="learning-card-heading"><strong>${escapeHTML((flag.categories || []).join(', '))}</strong></div>
+      <p class="comment-original">${escapeHTML(comment.text || '')}</p>
+      <a class="text-button" href="${escapeHTML(flag.permalink || '#')}" target="_blank" rel="noopener noreferrer">Open in YouTube Studio</a>
+    </article>`;
+  }).join('') : empty('Nothing flagged as spam, scam, or toxic.');
+}
+
+async function loadEngagementDetail(videoId) {
+  if (!videoId) return;
+  try {
+    const data = await api(`/api/engagement/${encodeURIComponent(videoId)}`);
+    ui.engagementDetail = data.result;
+    renderEngagementDetail();
+  } catch (_error) { /* toast already shown by api() */ }
+}
+
+function renderAudienceIdeas() {
+  const recommendations = (ui.state?.learning?.recommendations || []).filter(item => item.category === 'audience_demand');
+  $('#engagement-ideas').innerHTML = recommendations.length ? recommendations.map(item => `
+    <article class="learning-card">
+      <div class="learning-card-heading"><strong>${escapeHTML(item.title)}</strong>${statusChip(item.status)}</div>
+      <p>${escapeHTML(item.rationale)}</p>
+      <div class="learning-meta"><span>${escapeHTML(label(item.confidence))} confidence</span>
+        <span class="learning-actions">
+          ${item.status !== 'approved' ? `<button class="text-button approve" data-learning-action="approve" data-learning-id="${escapeHTML(item.id)}">Approve</button>` : ''}
+          ${item.status !== 'rejected' ? `<button class="text-button" data-learning-action="reject" data-learning-id="${escapeHTML(item.id)}">Reject</button>` : ''}
+        </span>
+      </div>
+    </article>`).join('') : empty('Mined audience requests appear here once comment analysis finds repeated asks.');
+}
+
 function retentionChart(snapshot = {}) {
   const points = Array.isArray(snapshot.points) ? snapshot.points : [];
   if (points.length < 2) return empty('This snapshot does not contain enough points for a curve.');
@@ -554,6 +673,7 @@ function switchView(view) {
     pipeline: ['CONTENT OPERATIONS', 'From idea to published.'],
     calendar: ['EDITORIAL PLANNING', 'Plan before you generate.'],
     analytics: ['PERFORMANCE', 'Turn results into the next move.'],
+    engagement: ['AUDIENCE ENGAGEMENT', 'Talk with the people watching.'],
     readiness: ['PRODUCTION READINESS', 'Verify before autonomy runs.'],
     settings: ['CHANNEL GUARDRAILS', 'Make every agent sound like you.']
   };
@@ -990,6 +1110,54 @@ document.addEventListener('click', async event => {
     }
   }
 
+  const syncEngagement = event.target.closest('#engagement-sync-button');
+  if (syncEngagement?.dataset.videoId) {
+    syncEngagement.disabled = true;
+    try {
+      await mutate(`/api/engagement/${encodeURIComponent(syncEngagement.dataset.videoId)}/sync`, 'POST', { analyze: true }, 'Comments synced from YouTube.');
+      ui.engagementDetail = null;
+      renderEngagement(ui.state?.engagement || {});
+    } catch (_error) { /* toast shown */ } finally {
+      syncEngagement.disabled = false;
+    }
+  }
+
+  const draftEngagement = event.target.closest('#engagement-draft-button');
+  if (draftEngagement?.dataset.videoId) {
+    draftEngagement.disabled = true;
+    try {
+      await mutate(`/api/engagement/${encodeURIComponent(draftEngagement.dataset.videoId)}/draft-replies`, 'POST', {}, 'Reply drafts created for review.');
+      ui.engagementDetail = null;
+      renderEngagement(ui.state?.engagement || {});
+    } catch (_error) { /* toast shown */ } finally {
+      draftEngagement.disabled = false;
+    }
+  }
+
+  const replySave = event.target.closest('[data-reply-save]');
+  if (replySave) {
+    const card = replySave.closest('[data-reply-card]');
+    const text = card?.querySelector('[data-reply-text]')?.value || '';
+    await mutate(`/api/engagement/replies/${encodeURIComponent(replySave.dataset.replySave)}`, 'PATCH', { editedText: text }, 'Reply draft updated.').catch(() => {});
+    ui.engagementDetail = null;
+  }
+
+  const replyDiscard = event.target.closest('[data-reply-discard]');
+  if (replyDiscard) {
+    await mutate(`/api/engagement/replies/${encodeURIComponent(replyDiscard.dataset.replyDiscard)}`, 'PATCH', { discard: true }, 'Reply draft discarded.').catch(() => {});
+    ui.engagementDetail = null;
+  }
+
+  const replyApprove = event.target.closest('[data-reply-approve]');
+  if (replyApprove) {
+    const card = replyApprove.closest('[data-reply-card]');
+    const text = card?.querySelector('[data-reply-text]')?.value || '';
+    if (confirm(`Post this reply to YouTube?\n\n${text}`)) {
+      await mutate(`/api/engagement/replies/${encodeURIComponent(replyApprove.dataset.replyApprove)}/approve`, 'POST', { confirmed: true, editedText: text }, 'Reply posted to YouTube.').catch(() => {});
+      ui.engagementDetail = null;
+    }
+  }
+
   const proposeShorts = event.target.closest('[data-propose-shorts]');
   if (proposeShorts) {
     const productionId = proposeShorts.dataset.proposeShorts;
@@ -1201,6 +1369,11 @@ document.addEventListener('change', event => {
     ui.retentionSnapshotId = event.target.value;
     renderRetention(ui.state?.learning?.retention || {});
   }
+  if (event.target.matches('#engagement-video-select')) {
+    ui.engagementVideoId = event.target.value;
+    ui.engagementDetail = null;
+    renderEngagement(ui.state?.engagement || {});
+  }
   if (event.target.matches('[name="selectedTitleVariant"]')) {
     const title = event.target.selectedOptions[0]?.dataset.title;
     const input = $('#content-review-form [name="title"]');
@@ -1326,6 +1499,6 @@ $('#api-key-button').addEventListener('click', () => {
 });
 
 const initialView = location.hash.slice(1);
-if (['overview', 'operator', 'pipeline', 'calendar', 'analytics', 'readiness', 'settings'].includes(initialView)) switchView(initialView);
+if (['overview', 'operator', 'pipeline', 'calendar', 'analytics', 'engagement', 'readiness', 'settings'].includes(initialView)) switchView(initialView);
 refreshDashboard();
 setInterval(() => refreshDashboard(true), 8000);
