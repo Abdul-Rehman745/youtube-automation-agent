@@ -123,7 +123,8 @@ class YouTubeAutomationAgent {
       // Initialize scheduler
       this.logger.info('Setting up automation scheduler...');
       this.scheduler = new DailyAutomation(this.agents, this.db, {
-        generateContent: input => this.queueScheduledContent(input)
+        generateContent: input => this.queueScheduledContent(input),
+        engagement: this.engagement
       });
       await this.scheduler.initialize();
 

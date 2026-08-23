@@ -11,6 +11,7 @@ class DailyAutomation {
     this.healthCheckInterval = null;
     this.lastHealthCheck = null;
     this.generateContent = options.generateContent || null;
+    this.engagement = options.engagement || null;
   }
 
   async initialize() {
@@ -76,6 +77,15 @@ class DailyAutomation {
       cron.schedule('0 3 * * 6', async () => {
         if (this.isEnabled) {
           await this.databaseMaintenance();
+        }
+      }, { scheduled: false })
+    );
+
+    // Audience comment sync every 4 hours; the service's own taper decides which videos are due
+    this.scheduledTasks.set('audience-engagement-sync',
+      cron.schedule('0 */4 * * *', async () => {
+        if (this.isEnabled) {
+          await this.collectAudienceEngagement();
         }
       }, { scheduled: false })
     );
@@ -276,6 +286,25 @@ class DailyAutomation {
         error: error.message
       });
       await this.sendFailureNotification('Analytics Collection', error);
+    }
+  }
+
+  async collectAudienceEngagement() {
+    if (!this.engagement) return;
+    try {
+      this.logger.info('Starting audience comment sync...');
+      const recentVideos = await this.getRecentlyPublishedVideos(30);
+      const results = await this.engagement.syncDueVideos(recentVideos.map(video => ({
+        youtubeId: video.youtube_id,
+        title: video.title,
+        publishedAt: video.published_at,
+        productionId: video.production_id || null
+      })));
+      this.logger.success(`Audience engagement sync completed: ${results.synced} synced, ${results.skipped} skipped, ${results.failed} failed`);
+      await this.logAutomationEvent('audience_engagement_sync', 'success', results);
+    } catch (error) {
+      this.logger.error('Audience engagement sync failed:', error);
+      await this.logAutomationEvent('audience_engagement_sync', 'error', { error: error.message });
     }
   }
 

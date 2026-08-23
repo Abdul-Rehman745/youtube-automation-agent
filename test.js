@@ -2,6 +2,7 @@ const { Database } = require('./database/db');
 const { Logger } = require('./utils/logger');
 const { CredentialManager } = require('./utils/credential-manager');
 const { AudienceEngagementService } = require('./utils/audience-engagement-service');
+const { DailyAutomation } = require('./schedules/daily-automation');
 const chalk = require('chalk');
 const path = require('path');
 const { ProductionReadinessService } = require('./utils/production-readiness-service');
@@ -56,7 +57,8 @@ class SystemTest {
       { name: 'Audience Comment Analysis', test: () => this.testAudienceCommentAnalysis() },
       { name: 'Audience Idea Mining', test: () => this.testAudienceIdeaMining() },
       { name: 'Reply Drafting', test: () => this.testReplyDrafting() },
-      { name: 'Reply Approval and Posting', test: () => this.testReplyApprovalAndPosting() }
+      { name: 'Reply Approval and Posting', test: () => this.testReplyApprovalAndPosting() },
+      { name: 'Engagement Sync Schedule', test: () => this.testEngagementSyncSchedule() }
     ];
 
     let passed = 0;
@@ -2785,6 +2787,38 @@ class SystemTest {
       await db.executeQuery('DELETE FROM engagement_insights WHERE video_id = ?', [videoId]);
       await db.close();
     }
+  }
+
+  async testEngagementSyncSchedule() {
+    let captured = null;
+    const events = [];
+    const fakeDb = {
+      getAllRows: async () => [
+        { youtube_id: 'vid_sched_1', title: 'Scheduled video', published_at: '2026-08-22T00:00:00.000Z', production_id: 'prod_1' }
+      ],
+      executeQuery: async () => ({}),
+      generateId: prefix => `${prefix}_test`
+    };
+    const scheduler = new DailyAutomation({}, fakeDb, {
+      generateContent: async () => {},
+      engagement: {
+        syncDueVideos: async videos => {
+          captured = videos;
+          return { synced: 1, skipped: 0, failed: 0, analyzed: 1 };
+        }
+      }
+    });
+    scheduler.logAutomationEvent = async (type, status, data) => { events.push({ type, status, data }); };
+    await scheduler.collectAudienceEngagement();
+    if (!captured || captured[0].youtubeId !== 'vid_sched_1') throw new Error('The scheduler did not map youtube_id');
+    if (captured[0].productionId !== 'prod_1' || captured[0].publishedAt !== '2026-08-22T00:00:00.000Z') {
+      throw new Error('The scheduler did not map production/publish fields');
+    }
+    if (!events.some(event => event.type === 'audience_engagement_sync' && event.status === 'success')) {
+      throw new Error('The engagement sweep must log an automation event');
+    }
+    const noService = new DailyAutomation({}, fakeDb, { generateContent: async () => {} });
+    await noService.collectAudienceEngagement(); // must be a silent no-op, not a crash
   }
 }
 
