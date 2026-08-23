@@ -194,7 +194,27 @@ class Database {
         measured_at TEXT DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(video_id, measurement_window)
       )`,
-      
+
+      `CREATE TABLE IF NOT EXISTS audience_comments (
+        id TEXT PRIMARY KEY,
+        comment_id TEXT NOT NULL UNIQUE,
+        video_id TEXT NOT NULL,
+        parent_comment_id TEXT,
+        author_name TEXT,
+        author_channel_id TEXT,
+        is_channel_owner INTEGER DEFAULT 0,
+        text TEXT NOT NULL,
+        like_count INTEGER DEFAULT 0,
+        reply_count INTEGER DEFAULT 0,
+        published_at TEXT,
+        updated_at_youtube TEXT,
+        flags TEXT NOT NULL DEFAULT '[]',
+        analysis_state TEXT DEFAULT 'pending',
+        replied_by_agent INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`,
+
       // Keywords Performance
       `CREATE TABLE IF NOT EXISTS keyword_performance (
         id TEXT PRIMARY KEY,
@@ -1855,6 +1875,111 @@ class Database {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       reviewedAt: row.reviewed_at
+    };
+  }
+
+  async upsertAudienceComment(comment) {
+    const existing = await this.getRow(
+      'SELECT id FROM audience_comments WHERE comment_id = ?',
+      [comment.commentId]
+    );
+    const id = existing?.id || this.generateId('comment');
+    await this.executeQuery(
+      `INSERT INTO audience_comments (
+        id, comment_id, video_id, parent_comment_id, author_name, author_channel_id,
+        is_channel_owner, text, like_count, reply_count, published_at, updated_at_youtube
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(comment_id) DO UPDATE SET
+        text = excluded.text,
+        like_count = excluded.like_count,
+        reply_count = excluded.reply_count,
+        updated_at_youtube = excluded.updated_at_youtube,
+        updated_at = CURRENT_TIMESTAMP`,
+      [
+        id,
+        comment.commentId,
+        comment.videoId,
+        comment.parentCommentId || null,
+        comment.authorName || null,
+        comment.authorChannelId || null,
+        comment.isChannelOwner ? 1 : 0,
+        comment.text,
+        Number(comment.likeCount || 0),
+        Number(comment.replyCount || 0),
+        comment.publishedAt || null,
+        comment.updatedAtYouTube || null
+      ]
+    );
+    return this.getAudienceComment(comment.commentId);
+  }
+
+  async getAudienceComment(commentId) {
+    const row = await this.getRow('SELECT * FROM audience_comments WHERE comment_id = ?', [commentId]);
+    return this.parseAudienceComment(row);
+  }
+
+  async listAudienceComments(options = {}) {
+    const conditions = ['video_id = ?'];
+    const params = [options.videoId];
+    if (options.topLevelOnly) conditions.push('parent_comment_id IS NULL');
+    if (options.analysisState) {
+      conditions.push('analysis_state = ?');
+      params.push(options.analysisState);
+    }
+    const limit = Math.max(1, Math.min(500, Number(options.limit || 200)));
+    const rows = await this.getAllRows(
+      `SELECT * FROM audience_comments WHERE ${conditions.join(' AND ')}
+       ORDER BY like_count DESC, published_at DESC LIMIT ?`,
+      [...params, limit]
+    );
+    return rows.map(row => this.parseAudienceComment(row));
+  }
+
+  async countAudienceComments(videoId) {
+    const row = await this.getRow(
+      `SELECT COUNT(*) AS total,
+              SUM(CASE WHEN parent_comment_id IS NULL THEN 1 ELSE 0 END) AS top_level
+       FROM audience_comments WHERE video_id = ?`,
+      [videoId]
+    );
+    return { total: Number(row?.total || 0), topLevel: Number(row?.top_level || 0) };
+  }
+
+  async setAudienceCommentAnalysis(commentId, flags) {
+    await this.executeQuery(
+      `UPDATE audience_comments
+       SET flags = ?, analysis_state = 'analyzed', updated_at = CURRENT_TIMESTAMP
+       WHERE comment_id = ?`,
+      [JSON.stringify(flags || []), commentId]
+    );
+    return this.getAudienceComment(commentId);
+  }
+
+  async markAudienceCommentReplied(commentId) {
+    await this.executeQuery(
+      `UPDATE audience_comments SET replied_by_agent = 1, updated_at = CURRENT_TIMESTAMP WHERE comment_id = ?`,
+      [commentId]
+    );
+    return this.getAudienceComment(commentId);
+  }
+
+  parseAudienceComment(row) {
+    if (!row) return null;
+    return {
+      ...row,
+      commentId: row.comment_id,
+      videoId: row.video_id,
+      parentCommentId: row.parent_comment_id,
+      authorName: row.author_name,
+      authorChannelId: row.author_channel_id,
+      isChannelOwner: Boolean(row.is_channel_owner),
+      likeCount: Number(row.like_count || 0),
+      replyCount: Number(row.reply_count || 0),
+      publishedAt: row.published_at,
+      updatedAtYouTube: row.updated_at_youtube,
+      flags: JSON.parse(row.flags || '[]'),
+      analysisState: row.analysis_state,
+      repliedByAgent: Boolean(row.replied_by_agent)
     };
   }
 

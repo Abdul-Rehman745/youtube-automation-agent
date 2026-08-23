@@ -46,7 +46,8 @@ class SystemTest {
       { name: 'Logger System', test: () => this.testLogger() },
       { name: 'Directory Structure', test: () => this.testDirectories() },
       { name: 'Agent Loading', test: () => this.testAgentLoading() },
-      { name: 'Configuration Files', test: () => this.testConfiguration() }
+      { name: 'Configuration Files', test: () => this.testConfiguration() },
+      { name: 'Audience Comment Store', test: () => this.testAudienceCommentStore() }
     ];
 
     let passed = 0;
@@ -2289,6 +2290,45 @@ class SystemTest {
     }
 
     this.logger.info('Agent loading test completed successfully');
+  }
+
+  async testAudienceCommentStore() {
+    const db = new Database();
+    await db.initialize();
+    const commentId = `ac_test_${Date.now()}`;
+    const videoId = `vid_test_${Date.now()}`;
+    try {
+      const first = await db.upsertAudienceComment({
+        commentId, videoId,
+        text: 'How does the render cache work?',
+        authorName: 'Viewer One', authorChannelId: 'UC_viewer_1',
+        likeCount: 3, replyCount: 0,
+        publishedAt: new Date().toISOString()
+      });
+      if (!first || first.commentId !== commentId) throw new Error('upsertAudienceComment did not store the comment');
+      if (first.isChannelOwner !== false || first.repliedByAgent !== false) throw new Error('Boolean parsing is wrong');
+
+      const second = await db.upsertAudienceComment({
+        commentId, videoId, text: 'How does the render cache work? (edited)', likeCount: 5
+      });
+      if (second.id !== first.id) throw new Error('Re-syncing the same comment must upsert, not duplicate');
+      if (second.likeCount !== 5 || !second.text.includes('(edited)')) throw new Error('Upsert did not refresh mutable fields');
+
+      const flagged = await db.setAudienceCommentAnalysis(commentId, ['question']);
+      if (flagged.analysisState !== 'analyzed' || !flagged.flags.includes('question')) throw new Error('Analysis flags were not persisted');
+
+      const listed = await db.listAudienceComments({ videoId, topLevelOnly: true });
+      if (listed.length !== 1) throw new Error('listAudienceComments missed the top-level comment');
+
+      const counts = await db.countAudienceComments(videoId);
+      if (counts.total !== 1 || counts.topLevel !== 1) throw new Error('countAudienceComments returned wrong counts');
+
+      const replied = await db.markAudienceCommentReplied(commentId);
+      if (!replied.repliedByAgent) throw new Error('markAudienceCommentReplied did not persist');
+    } finally {
+      await db.executeQuery('DELETE FROM audience_comments WHERE video_id = ?', [videoId]);
+      await db.close();
+    }
   }
 
   async testConfiguration() {
