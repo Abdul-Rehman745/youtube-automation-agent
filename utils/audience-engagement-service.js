@@ -280,9 +280,56 @@ Comments: ${JSON.stringify(payload)}`;
     return insight;
   }
 
-  // Fully replaced in the idea-mining task; must exist so analyzeVideo can call it.
-  async refreshAudienceRecommendations(_videoId, _insight) {
-    return [];
+  normalizedTopic(title) {
+    return String(title || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  audienceFingerprint(videoId, topic) {
+    return crypto.createHash('sha256')
+      .update(JSON.stringify({ category: 'audience_demand', videoId, topic }))
+      .digest('hex');
+  }
+
+  confidenceForAskCount(count) {
+    if (count >= 10) return 'high';
+    if (count >= 5) return 'medium';
+    return 'low';
+  }
+
+  async refreshAudienceRecommendations(videoId, insight) {
+    if (insight?.analysisMethod !== 'ai') return [];
+    const saved = [];
+    for (const theme of insight.themes || []) {
+      if (!['request', 'question'].includes(theme.kind)) continue;
+      if ((theme.count || 0) < 3) continue;
+      const topic = this.normalizedTopic(theme.title);
+      if (!topic) continue;
+      const sampleComments = [];
+      for (const commentId of (theme.commentIds || []).slice(0, 5)) {
+        const comment = await this.db.getAudienceComment(commentId);
+        if (!comment) continue;
+        sampleComments.push({
+          commentId,
+          permalink: this.permalink(videoId, commentId),
+          excerpt: String(comment.text || '').slice(0, 140)
+        });
+      }
+      saved.push(await this.db.saveLearningRecommendation({
+        fingerprint: this.audienceFingerprint(videoId, topic),
+        category: 'audience_demand',
+        title: `Audience request: ${theme.title}`,
+        rationale: `${theme.count} commenters on "${insight.title || videoId}" raised this: ${theme.summary}`,
+        evidence: { videoId, themeTitle: theme.title, askCount: theme.count, sampleComments },
+        proposedChange: {
+          target: 'future_topics',
+          topic: theme.title,
+          angle: theme.summary,
+          autoEditPublishedContent: false
+        },
+        confidence: this.confidenceForAskCount(theme.count)
+      }));
+    }
+    return saved;
   }
 
   async syncDueVideos(videos = []) {

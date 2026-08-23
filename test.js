@@ -53,7 +53,8 @@ class SystemTest {
       { name: 'Reply Draft Lifecycle Store', test: () => this.testReplyDraftStore() },
       { name: 'YouTube Scope Detection', test: () => this.testYouTubeScopeDetection() },
       { name: 'Audience Comment Sync', test: () => this.testAudienceCommentSync() },
-      { name: 'Audience Comment Analysis', test: () => this.testAudienceCommentAnalysis() }
+      { name: 'Audience Comment Analysis', test: () => this.testAudienceCommentAnalysis() },
+      { name: 'Audience Idea Mining', test: () => this.testAudienceIdeaMining() }
     ];
 
     let passed = 0;
@@ -2603,6 +2604,50 @@ class SystemTest {
     } finally {
       await db.executeQuery('DELETE FROM audience_comments WHERE video_id LIKE ?', [`${videoId}%`]);
       await db.executeQuery('DELETE FROM engagement_insights WHERE video_id LIKE ?', [`${videoId}%`]);
+      await db.close();
+    }
+  }
+
+  async testAudienceIdeaMining() {
+    const db = new Database();
+    await db.initialize();
+    const videoId = `vid_mining_${Date.now()}`;
+    try {
+      for (const suffix of ['m1', 'm2', 'm3']) {
+        await db.upsertAudienceComment({
+          commentId: `${videoId}_${suffix}`, videoId,
+          text: `Please cover local caching next (${suffix})`, publishedAt: new Date().toISOString()
+        });
+      }
+      const service = new AudienceEngagementService(db, null, null, {});
+      const insight = {
+        videoId, title: 'Mining test', analysisMethod: 'ai',
+        themes: [
+          { title: 'Cover local caching', summary: 'Repeated requests for a caching deep-dive', kind: 'request',
+            count: 3, commentIds: [`${videoId}_m1`, `${videoId}_m2`, `${videoId}_m3`] },
+          { title: 'Too few asks', summary: 'Only two', kind: 'request', count: 2, commentIds: [`${videoId}_m1`, `${videoId}_m2`] },
+          { title: 'Praise cluster', summary: 'Nice video', kind: 'praise', count: 5, commentIds: [`${videoId}_m1`, `${videoId}_m2`, `${videoId}_m3`] }
+        ]
+      };
+      const saved = await service.refreshAudienceRecommendations(videoId, insight);
+      if (saved.length !== 1) throw new Error(`Only the >=3 request/question theme may mine an idea; got ${saved.length}`);
+      const recommendation = saved[0];
+      if (recommendation.category !== 'audience_demand') throw new Error('Category must be audience_demand');
+      if (recommendation.status !== 'pending') throw new Error('Mined ideas must be pending until reviewed');
+      if (recommendation.confidence !== 'low') throw new Error('Ask-count 3 maps to low confidence');
+      const evidence = recommendation.evidence; // parseLearningRecommendation returns it already parsed
+      if (evidence.askCount !== 3 || evidence.sampleComments.length !== 3) throw new Error('Evidence is incomplete');
+      if (!evidence.sampleComments[0].permalink.includes('&lc=')) throw new Error('Evidence must carry comment permalinks');
+      if (recommendation.proposedChange.autoEditPublishedContent !== false) throw new Error('autoEditPublishedContent must be false');
+
+      const again = await service.refreshAudienceRecommendations(videoId, insight);
+      if (again[0].id !== recommendation.id) throw new Error('Re-analysis must dedupe by fingerprint, not duplicate');
+
+      const nonAI = await service.refreshAudienceRecommendations(videoId, { ...insight, analysisMethod: 'fallback' });
+      if (nonAI.length !== 0) throw new Error('Fallback analysis must never mine ideas');
+    } finally {
+      await db.executeQuery("DELETE FROM learning_recommendations WHERE category = 'audience_demand' AND evidence LIKE ?", [`%${videoId}%`]);
+      await db.executeQuery('DELETE FROM audience_comments WHERE video_id = ?', [videoId]);
       await db.close();
     }
   }
