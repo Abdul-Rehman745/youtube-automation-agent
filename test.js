@@ -54,7 +54,8 @@ class SystemTest {
       { name: 'YouTube Scope Detection', test: () => this.testYouTubeScopeDetection() },
       { name: 'Audience Comment Sync', test: () => this.testAudienceCommentSync() },
       { name: 'Audience Comment Analysis', test: () => this.testAudienceCommentAnalysis() },
-      { name: 'Audience Idea Mining', test: () => this.testAudienceIdeaMining() }
+      { name: 'Audience Idea Mining', test: () => this.testAudienceIdeaMining() },
+      { name: 'Reply Drafting', test: () => this.testReplyDrafting() }
     ];
 
     let passed = 0;
@@ -2649,6 +2650,62 @@ class SystemTest {
     } finally {
       await db.executeQuery("DELETE FROM learning_recommendations WHERE category = 'audience_demand' AND evidence LIKE ?", [`%${videoId}%`]);
       await db.executeQuery('DELETE FROM audience_comments WHERE video_id = ?', [videoId]);
+      await db.close();
+    }
+  }
+
+  async testReplyDrafting() {
+    const db = new Database();
+    await db.initialize();
+    const videoId = `vid_draft_${Date.now()}`;
+    const seed = (suffix, text, flags, extra = {}) => db.upsertAudienceComment({
+      commentId: `${videoId}_${suffix}`, videoId, text,
+      publishedAt: new Date().toISOString(), ...extra
+    }).then(() => db.setAudienceCommentAnalysis(`${videoId}_${suffix}`, flags));
+    try {
+      await seed('q1', 'How long does a render take?', ['question']);
+      await seed('praise1', 'Great video!', ['praise']);
+      await seed('scam1', 'Claim your prize now', ['scam']);
+      await seed('own1', 'Thanks all!', [], { isChannelOwner: true });
+      await db.upsertAudienceComment({
+        commentId: `${videoId}_nested`, videoId, parentCommentId: `${videoId}_q1`,
+        text: 'Also curious?', publishedAt: new Date().toISOString()
+      });
+      await db.saveEngagementInsight({ videoId, title: 'Draft test', analysisMethod: 'ai', analyzedAt: new Date().toISOString() });
+
+      let promptSeen = '';
+      const service = new AudienceEngagementService(db, null, {
+        isAvailable: () => true,
+        generateText: async prompt => {
+          promptSeen = prompt;
+          return JSON.stringify([
+            { commentId: `${videoId}_q1`, reply: 'About two minutes per scene on default settings.', rationale: 'Direct question' },
+            { commentId: `${videoId}_praise1`, reply: 'Visit http://spam.example now', rationale: 'Link should be dropped' },
+            { commentId: `${videoId}_scam1`, reply: 'Should never appear', rationale: 'Quarantined' }
+          ]);
+        }
+      }, {});
+
+      const drafts = await service.draftReplies(videoId);
+      if (drafts.length !== 1) throw new Error(`Expected 1 usable draft (link + quarantined dropped), got ${drafts.length}`);
+      if (drafts[0].commentId !== `${videoId}_q1` || drafts[0].status !== 'proposed') throw new Error('Draft shape is wrong');
+      if (promptSeen.includes(`${videoId}_scam1`) || promptSeen.includes(`${videoId}_own1`) || promptSeen.includes(`${videoId}_nested`)) {
+        throw new Error('Quarantined, owner, and nested comments must never reach the draft prompt');
+      }
+
+      const noAI = new AudienceEngagementService(db, null, { isAvailable: () => false }, {});
+      let status = 0;
+      try { await noAI.draftReplies(videoId); } catch (error) { status = error.status; }
+      if (status !== 503) throw new Error('Drafting without AI must throw 503');
+
+      await db.saveEngagementInsight({ videoId: `${videoId}_fb`, analysisMethod: 'fallback' });
+      status = 0;
+      try { await service.draftReplies(`${videoId}_fb`); } catch (error) { status = error.status; }
+      if (status !== 409) throw new Error('Drafting without an AI analysis must throw 409');
+    } finally {
+      await db.executeQuery('DELETE FROM audience_comments WHERE video_id = ?', [videoId]);
+      await db.executeQuery('DELETE FROM engagement_insights WHERE video_id LIKE ?', [`${videoId}%`]);
+      await db.executeQuery('DELETE FROM reply_drafts WHERE video_id = ?', [videoId]);
       await db.close();
     }
   }
