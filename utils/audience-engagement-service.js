@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { Logger } = require('./logger');
 
+// eslint-disable-next-line no-unused-vars -- consumed by postingEnabled() in the reply-posting task, which removes this directive
 const FORCE_SSL_SCOPE = 'https://www.googleapis.com/auth/youtube.force-ssl';
 const COMMENT_FLAGS = ['question', 'request', 'praise', 'correction', 'spam', 'scam', 'toxic'];
 const QUARANTINE_FLAGS = ['spam', 'scam', 'toxic'];
