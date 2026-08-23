@@ -106,7 +106,8 @@ class CredentialManager {
       'https://www.googleapis.com/auth/youtube.upload',
       'https://www.googleapis.com/auth/youtube',
       'https://www.googleapis.com/auth/youtube.readonly',
-      'https://www.googleapis.com/auth/yt-analytics.readonly'
+      'https://www.googleapis.com/auth/yt-analytics.readonly',
+      'https://www.googleapis.com/auth/youtube.force-ssl'
     ];
 
     const authUrl = oauth2Client.generateAuthUrl({
@@ -153,6 +154,11 @@ class CredentialManager {
   getYouTubeClient() {
     const auth = this.getYouTubeAuth();
     return google.youtube({ version: 'v3', auth });
+  }
+
+  hasYouTubeScope(scope) {
+    const granted = String(this.tokens?.youtube?.scope || '');
+    return granted.split(/\s+/).includes(scope);
   }
 
   // OpenAI API Setup

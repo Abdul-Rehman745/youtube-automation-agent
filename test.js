@@ -49,7 +49,8 @@ class SystemTest {
       { name: 'Configuration Files', test: () => this.testConfiguration() },
       { name: 'Audience Comment Store', test: () => this.testAudienceCommentStore() },
       { name: 'Engagement Insight Store', test: () => this.testEngagementInsightStore() },
-      { name: 'Reply Draft Lifecycle Store', test: () => this.testReplyDraftStore() }
+      { name: 'Reply Draft Lifecycle Store', test: () => this.testReplyDraftStore() },
+      { name: 'YouTube Scope Detection', test: () => this.testYouTubeScopeDetection() }
     ];
 
     let passed = 0;
@@ -2292,6 +2293,18 @@ class SystemTest {
     }
 
     this.logger.info('Agent loading test completed successfully');
+  }
+
+  async testYouTubeScopeDetection() {
+    const manager = new CredentialManager();
+    const forceSsl = 'https://www.googleapis.com/auth/youtube.force-ssl';
+    manager.tokens = { youtube: { scope: 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube' } };
+    if (manager.hasYouTubeScope(forceSsl)) throw new Error('force-ssl must not be reported before consent');
+    if (!manager.hasYouTubeScope('https://www.googleapis.com/auth/youtube')) throw new Error('Granted scopes must be detected');
+    manager.tokens.youtube.scope += ` ${forceSsl}`;
+    if (!manager.hasYouTubeScope(forceSsl)) throw new Error('force-ssl must be detected after consent');
+    manager.tokens = {};
+    if (manager.hasYouTubeScope('https://www.googleapis.com/auth/youtube')) throw new Error('Missing tokens must report no scopes');
   }
 
   async testReplyDraftStore() {
