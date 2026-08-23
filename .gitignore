@@ -87,3 +87,6 @@ data/captions/
 data/scripts/
 data/videos/
 data/thumbnails/
+
+# Claude worktrees
+.claude/worktrees/
