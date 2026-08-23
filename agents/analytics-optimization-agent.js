@@ -64,7 +64,10 @@ class AnalyticsOptimizationAgent {
       const period = this.learning.measurementPeriod(videoDetails.publishedAt, measurementWindow);
 
       // Get analytics data
-      const analytics = await this.getVideoAnalytics(videoId, period);
+      const channelStrategy = this.db.getChannelStrategy ? await this.db.getChannelStrategy() : null;
+      const analytics = await this.getVideoAnalytics(videoId, period, {
+        currency: channelStrategy?.outcome_currency || 'USD'
+      });
       const context = await this.db.getPublishedContentContext(videoId);
 
       // Fetch the granular retention curve separately so its absence never
@@ -156,7 +159,7 @@ class AnalyticsOptimizationAgent {
     };
   }
 
-  async getVideoAnalytics(videoId, period = null) {
+  async getVideoAnalytics(videoId, period = null, options = {}) {
     const endDate = period?.endDate || new Date().toISOString().split('T')[0];
     const startDate = period?.startDate || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     
@@ -167,13 +170,15 @@ class AnalyticsOptimizationAgent {
         watchTimeData,
         demographicsData,
         trafficSourcesData,
-        deviceData
+        deviceData,
+        outcomeData
       ] = await Promise.all([
         this.getViewsAnalytics(videoId, startDate, endDate),
         this.getWatchTimeAnalytics(videoId, startDate, endDate),
         this.getDemographicsAnalytics(videoId, startDate, endDate),
         this.getTrafficSourcesAnalytics(videoId, startDate, endDate),
-        this.getDeviceAnalytics(videoId, startDate, endDate)
+        this.getDeviceAnalytics(videoId, startDate, endDate),
+        this.getOutcomeAnalytics(videoId, startDate, endDate, options.currency || 'USD')
       ]);
       
       return {
@@ -184,6 +189,7 @@ class AnalyticsOptimizationAgent {
         demographics: demographicsData,
         trafficSources: trafficSourcesData,
         devices: deviceData,
+        outcomes: outcomeData,
         engagement: await this.calculateEngagementMetrics(videoId)
       };
     } catch (error) {
@@ -304,6 +310,40 @@ class AnalyticsOptimizationAgent {
         percentage: ((row[1] / totalViews) * 100).toFixed(1)
       })),
       mobilePercentage: this.calculateMobilePercentage(devices)
+    };
+  }
+
+  async getOutcomeAnalytics(videoId, startDate, endDate, currency = 'USD') {
+    const query = (metrics, includeCurrency = false) => this.youtubeAnalytics.reports.query({
+      ids: 'channel==MINE',
+      startDate,
+      endDate,
+      metrics,
+      filters: `video==${videoId}`,
+      ...(includeCurrency ? { currency } : {})
+    });
+    const [subscriberResult, revenueResult] = await Promise.allSettled([
+      query('subscribersGained,subscribersLost'),
+      query('estimatedRevenue,monetizedPlaybacks,playbackBasedCpm', true)
+    ]);
+    const subscribers = subscriberResult.status === 'fulfilled'
+      ? subscriberResult.value.data.rows?.[0] || [0, 0]
+      : null;
+    const revenue = revenueResult.status === 'fulfilled'
+      ? revenueResult.value.data.rows?.[0] || [0, 0, 0]
+      : null;
+    if (!subscribers) this.logger.warn(`Subscriber outcomes unavailable for ${videoId}: ${subscriberResult.reason?.message || 'unknown error'}`);
+    if (!revenue) this.logger.info(`Revenue outcomes unavailable for ${videoId}; monetization data will remain unavailable`);
+    return {
+      subscribersAvailable: Boolean(subscribers),
+      subscribersGained: subscribers ? Number(subscribers[0] || 0) : null,
+      subscribersLost: subscribers ? Number(subscribers[1] || 0) : null,
+      netSubscribers: subscribers ? Number(subscribers[0] || 0) - Number(subscribers[1] || 0) : null,
+      revenueAvailable: Boolean(revenue),
+      currency: revenue ? currency : null,
+      estimatedRevenue: revenue ? Number(revenue[0] || 0) : null,
+      monetizedPlaybacks: revenue ? Number(revenue[1] || 0) : null,
+      playbackBasedCpm: revenue ? Number(revenue[2] || 0) : null
     };
   }
 
@@ -672,7 +712,12 @@ class AnalyticsOptimizationAgent {
       views: { totalViews: Math.floor(Math.random() * 50000), averageCTR: Math.random() * 10 },
       watchTime: { averageViewPercentage: Math.random() * 100 },
       engagement: { engagementRate: Math.random() * 10 },
-      trafficSources: { sources: [{ source: 'SEARCH', percentage: '30' }] }
+      trafficSources: { sources: [{ source: 'SEARCH', percentage: '30' }] },
+      outcomes: {
+        subscribersAvailable: false, subscribersGained: null, subscribersLost: null,
+        netSubscribers: null, revenueAvailable: false, estimatedRevenue: null,
+        monetizedPlaybacks: null, playbackBasedCpm: null
+      }
     };
   }
 

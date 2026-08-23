@@ -481,6 +481,11 @@ class Database {
         default_format TEXT DEFAULT 'explainer',
         default_length TEXT DEFAULT 'medium',
         success_metric TEXT,
+        primary_kpi TEXT DEFAULT 'views',
+        target_value REAL,
+        target_window_days INTEGER DEFAULT 28,
+        monthly_budget REAL,
+        outcome_currency TEXT DEFAULT 'USD',
         constraints TEXT,
         status TEXT DEFAULT 'draft',
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -543,13 +548,20 @@ class Database {
       narration_generated_at: 'TEXT',
       narration_cost: "TEXT NOT NULL DEFAULT '{}'"
     });
+    await this.ensureColumns('channel_strategies', {
+      primary_kpi: "TEXT DEFAULT 'views'",
+      target_value: 'REAL',
+      target_window_days: 'INTEGER DEFAULT 28',
+      monthly_budget: 'REAL',
+      outcome_currency: "TEXT DEFAULT 'USD'"
+    });
 
     // Insert default settings
     await this.insertDefaultSettings();
   }
 
   async ensureColumns(tableName, columns) {
-    const allowedTables = new Set(['production_scenes']);
+    const allowedTables = new Set(['production_scenes', 'channel_strategies']);
     if (!allowedTables.has(tableName)) throw new Error(`Unsupported migration table: ${tableName}`);
     const existing = new Set((await this.getAllRows(`PRAGMA table_info(${tableName})`)).map(column => column.name));
     for (const [columnName, definition] of Object.entries(columns)) {
@@ -1400,15 +1412,19 @@ class Database {
     await this.executeQuery(
       `INSERT INTO channel_strategies (
         id, objective, audience, value_proposition, content_pillars, cadence_per_week,
-        videos_per_run, default_format, default_length, success_metric, constraints,
+        videos_per_run, default_format, default_length, success_metric, primary_kpi,
+        target_value, target_window_days, monthly_budget, outcome_currency, constraints,
         status, created_at, updated_at
-      ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), datetime('now'))
+      ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), datetime('now'))
       ON CONFLICT(id) DO UPDATE SET
         objective = excluded.objective, audience = excluded.audience,
         value_proposition = excluded.value_proposition, content_pillars = excluded.content_pillars,
         cadence_per_week = excluded.cadence_per_week, videos_per_run = excluded.videos_per_run,
         default_format = excluded.default_format, default_length = excluded.default_length,
-        success_metric = excluded.success_metric, constraints = excluded.constraints,
+        success_metric = excluded.success_metric, primary_kpi = excluded.primary_kpi,
+        target_value = excluded.target_value, target_window_days = excluded.target_window_days,
+        monthly_budget = excluded.monthly_budget, outcome_currency = excluded.outcome_currency,
+        constraints = excluded.constraints,
         status = excluded.status, updated_at = datetime('now')`,
       [
         strategy.objective ?? current.objective ?? '',
@@ -1420,6 +1436,11 @@ class Database {
         strategy.defaultFormat ?? current.default_format ?? 'explainer',
         strategy.defaultLength ?? current.default_length ?? 'medium',
         strategy.successMetric ?? current.success_metric ?? '',
+        strategy.primaryKpi ?? current.primary_kpi ?? 'views',
+        strategy.targetValue ?? current.target_value ?? null,
+        strategy.targetWindowDays ?? current.target_window_days ?? 28,
+        strategy.monthlyBudget ?? current.monthly_budget ?? null,
+        strategy.outcomeCurrency ?? current.outcome_currency ?? 'USD',
         strategy.constraints ?? current.constraints ?? '',
         strategy.status ?? current.status ?? 'draft',
         current.created_at || null
@@ -2220,8 +2241,45 @@ class Database {
       script: JSON.parse(row.script || '{}'),
       thumbnail: selectedThumbnail?.concept ? { ...thumbnail, concept: selectedThumbnail.concept } : thumbnail,
       seo: JSON.parse(row.seo || '{}'),
+      productionCost: this.summarizeProductionCost(sourceScenes),
       retentionScenes: this.buildRetentionSceneContext(sourceScenes, shortClip),
       retentionDuration: isShort ? shortClip?.duration || null : sourceScenes.reduce((sum, scene) => sum + Number(scene.duration || 0), 0)
+    };
+  }
+
+  summarizeProductionCost(scenes = []) {
+    const entries = scenes.flatMap(scene => [scene.actualCost, scene.narrationCost]).filter(entry => entry && (
+      entry.amount !== undefined || entry.billed !== undefined || entry.invoiceRequired || entry.provider || entry.generatedSeconds
+    ));
+    const currencies = new Set();
+    const providers = new Set();
+    let amount = 0;
+    let knownEntries = 0;
+    let unknownEntries = 0;
+    let freeEntries = 0;
+    for (const entry of entries) {
+      if (entry.provider) providers.add(String(entry.provider));
+      if (entry.billed === false) {
+        freeEntries++;
+        continue;
+      }
+      const numericAmount = Number(entry.amount);
+      if (Number.isFinite(numericAmount) && numericAmount >= 0) {
+        amount += numericAmount;
+        knownEntries++;
+        if (entry.currency) currencies.add(String(entry.currency).toUpperCase());
+      } else if (entry.invoiceRequired || entry.billed !== false) {
+        unknownEntries++;
+      }
+    }
+    return {
+      amount: currencies.size > 1 ? null : knownEntries ? Number(amount.toFixed(4)) : freeEntries && unknownEntries === 0 ? 0 : null,
+      currency: currencies.size === 1 ? [...currencies][0] : null,
+      complete: unknownEntries === 0 && currencies.size <= 1,
+      knownEntries,
+      unknownEntries,
+      freeEntries,
+      providers: [...providers]
     };
   }
 

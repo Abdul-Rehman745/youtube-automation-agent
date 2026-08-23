@@ -27,6 +27,7 @@ class SystemTest {
       { name: 'Operator Workflow API', test: () => this.testOperatorWorkflowAPI() },
       { name: 'Autonomous Channel Operator', test: () => this.testAutonomousChannelOperator() },
       { name: 'Closed-loop Channel Learning', test: () => this.testChannelLearningLoop() },
+      { name: 'Outcome and ROI Studio', test: () => this.testOutcomeROIStudio() },
       { name: 'Scene-Aware Retention Studio', test: () => this.testSceneAwareRetentionStudio() },
       { name: 'Production Readiness Gate', test: () => this.testProductionReadinessGate() },
       { name: 'Durable Multi-Provider Video Generation', test: () => this.testVideoProviderLayer() },
@@ -594,6 +595,89 @@ class SystemTest {
     }
 
     this.logger.info('Closed-loop channel learning test completed successfully');
+  }
+
+  async testOutcomeROIStudio() {
+    const fs = require('fs').promises;
+    const os = require('os');
+    const { ChannelLearningEngine } = require('./utils/channel-learning-engine');
+    const { AnalyticsOptimizationAgent } = require('./agents/analytics-optimization-agent');
+    const { YouTubeAutomationAgent } = require('./index');
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'yaa-outcomes-'));
+    const db = new Database();
+    db.dbPath = path.join(directory, 'outcomes.db');
+    await db.initialize();
+
+    try {
+      const validated = new YouTubeAutomationAgent().validateChannelStrategy({
+        objective: 'Grow a durable automation audience', audience: 'Small teams',
+        contentPillars: ['Automation', 'Tool reviews'], primaryKpi: 'subscribers',
+        targetValue: 40, targetWindowDays: 28, monthlyBudget: 100,
+        outcomeCurrency: 'USD', status: 'active'
+      });
+      const strategy = await db.saveChannelStrategy(validated);
+      if (strategy.primary_kpi !== 'subscribers' || strategy.target_value !== 40 || strategy.target_window_days !== 28) {
+        throw new Error('Structured outcome strategy was not validated and persisted');
+      }
+
+      const learning = new ChannelLearningEngine(db);
+      const report = (videoId, format, subscribers, revenue) => ({
+        videoId,
+        videoDetails: { title: `${format} outcome fixture`, publishedAt: new Date(Date.now() - 8 * 86400000).toISOString() },
+        analytics: {
+          simulated: false,
+          views: { totalViews: 1000, totalImpressions: 10000, averageCTR: 5 },
+          watchTime: { averageViewPercentage: 45, averageViewDuration: 240, totalWatchTime: 4000 },
+          engagement: { engagementRate: 4 },
+          outcomes: {
+            subscribersAvailable: true, subscribersGained: subscribers + 1, subscribersLost: 1,
+            netSubscribers: subscribers, revenueAvailable: true, estimatedRevenue: revenue,
+            monetizedPlaybacks: 500, playbackBasedCpm: 8, currency: 'USD'
+          }
+        },
+        thumbnailMetrics: { impressions: 10000, clickThroughRate: 5 },
+        performance: { score: 70, grade: 'B' }
+      });
+      const context = (format, pillar) => ({
+        strategy: { topic: `${format} topic`, contentType: format, requestedLengthKey: 'medium', contentPillar: pillar },
+        script: { hook: 'A concise, outcome-aligned opening.' },
+        thumbnail: { concept: { composition: 'centered' } },
+        productionCost: { amount: 2, currency: 'USD', complete: true, providers: ['fixture-video'] }
+      });
+      await learning.capture(report('outcome-tutorial-1', 'tutorial', 12, 5), context('tutorial', 'Automation'), '7d');
+      await learning.capture(report('outcome-tutorial-2', 'tutorial', 10, 5), context('tutorial', 'Automation'), '7d');
+      await learning.capture(report('outcome-list-1', 'list', 2, 5), context('list', 'Tool reviews'), '7d');
+      await learning.capture(report('outcome-list-2', 'list', 1, 5), context('list', 'Tool reviews'), '7d');
+
+      const summary = await learning.getSummary();
+      const recommendation = summary.recommendations.find(item => item.category === 'outcome_alignment');
+      if (
+        summary.outcome.goal.id !== 'subscribers' || summary.outcome.observed !== 25 ||
+        summary.outcome.progressPercent !== 62.5 || summary.outcome.economics.roi !== 150 ||
+        !recommendation || recommendation.status !== 'pending' || recommendation.proposedChange.autoApply !== false
+      ) {
+        throw new Error('Outcome evidence did not produce the expected goal scorecard and approval-gated recommendation');
+      }
+
+      const analytics = new AnalyticsOptimizationAgent(db, { getYouTubeAuth: () => ({}) });
+      analytics.youtubeAnalytics = {
+        reports: {
+          query: async ({ metrics }) => {
+            if (metrics.includes('estimatedRevenue')) throw new Error('not monetized');
+            return { data: { rows: [[7, 2]] } };
+          }
+        }
+      };
+      const outcomes = await analytics.getOutcomeAnalytics('outcome-video', '2026-08-01', '2026-08-07');
+      if (!outcomes.subscribersAvailable || outcomes.netSubscribers !== 5 || outcomes.revenueAvailable || outcomes.estimatedRevenue !== null) {
+        throw new Error('Unavailable monetization evidence was converted into a false zero');
+      }
+    } finally {
+      await db.close();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+
+    this.logger.info('Outcome and ROI Studio test completed successfully');
   }
 
   async testSceneAwareRetentionStudio() {

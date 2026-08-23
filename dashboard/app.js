@@ -315,8 +315,69 @@ function renderAnalytics(analytics, learning = {}) {
   const performers = Array.isArray(analytics.topPerformers) ? analytics.topPerformers : [];
   $('#top-performers').innerHTML = performers.length ? performers.map(item => `
     <article class="performer-card"><strong>${escapeHTML(item.videoDetails?.title || item.title || 'Untitled video')}</strong><div class="meta-line">Performance ${escapeHTML(item.performance?.score ?? item.performance_score ?? '—')} / 100</div></article>`).join('') : empty('No analyzed videos yet.');
+  renderOutcome(learning.outcome || {});
   renderLearning(learning);
   renderRetention(learning.retention || {});
+}
+
+function formatOutcomeValue(value, kind = 'number', currency = 'USD') {
+  if (value === null || value === undefined) return 'Unavailable';
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 'Unavailable';
+  if (kind === 'currency') {
+    try {
+      return new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 2 }).format(number);
+    } catch (_error) {
+      return `${currency} ${number.toFixed(2)}`;
+    }
+  }
+  if (kind === 'percent') return `${number.toFixed(1)}%`;
+  if (kind === 'hours') return `${number.toFixed(1)}h`;
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(number);
+}
+
+function renderOutcome(outcome = {}) {
+  const status = $('#outcome-status');
+  if (!outcome.configured || !outcome.goal) {
+    status.textContent = 'Not configured';
+    status.className = 'status';
+    $('#outcome-summary').innerHTML = empty('Choose a measurable primary outcome in the Autonomous Operator strategy.');
+    $('#outcome-economics').innerHTML = '';
+    $('#outcome-breakdowns').innerHTML = '';
+    $('#outcome-policy').textContent = outcome.evidencePolicy || 'Configure a primary outcome to activate goal-aligned learning.';
+    return;
+  }
+  const { goal, economics = {}, coverage = {}, breakdowns = {} } = outcome;
+  status.textContent = outcome.available ? 'Measuring' : 'Awaiting evidence';
+  status.className = `status ${outcome.available ? 'active' : ''}`;
+  const target = goal.targetValue === null
+    ? `No numeric target · ${goal.windowDays}-day evidence window`
+    : `${formatOutcomeValue(goal.targetValue, goal.unit, goal.currency)} target · ${goal.windowDays} days`;
+  const progress = outcome.progressPercent === null ? null : Math.min(100, Number(outcome.progressPercent));
+  $('#outcome-summary').innerHTML = `
+    <div class="outcome-primary">
+      <span>${escapeHTML(goal.label)}</span>
+      <strong>${escapeHTML(outcome.formattedObserved || 'Unavailable')}</strong>
+      <small>${escapeHTML(target)} · ${Number(outcome.measuredVideoCount || 0)} measured videos</small>
+      ${progress === null ? '' : `<div class="outcome-progress" role="progressbar" aria-label="Outcome target progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}"><span style="width:${progress}%"></span></div><small>${Number(outcome.progressPercent).toFixed(1)}% of target from stored measurement windows</small>`}
+    </div>`;
+  const economicsRows = [
+    ['Net subscribers', economics.netSubscribers, 'number', coverage.subscribers],
+    ['Watch hours', economics.watchHours, 'hours', null],
+    ['Estimated revenue', economics.estimatedRevenue, 'currency', coverage.revenue],
+    ['Known production cost', economics.knownProductionCost, 'currency', coverage.cost],
+    ['Estimated ROI', economics.roi, 'percent', null],
+    ['Budget used', economics.budgetUsedPercent, 'percent', null]
+  ];
+  $('#outcome-economics').innerHTML = economicsRows.map(([name, value, kind, metricCoverage]) => `
+    <div><span>${escapeHTML(name)}</span><strong>${escapeHTML(formatOutcomeValue(value, kind, economics.currency || goal.currency))}</strong>${metricCoverage ? `<small>${Number(metricCoverage.measured || 0)}/${Number(metricCoverage.total || 0)} videos measured</small>` : ''}</div>`).join('');
+  const dimensions = [
+    ['pillar', 'Content pillars'], ['format', 'Formats'], ['provider', 'Production providers']
+  ].filter(([key]) => Array.isArray(breakdowns[key]) && breakdowns[key].length);
+  $('#outcome-breakdowns').innerHTML = dimensions.length ? dimensions.map(([key, heading]) => `
+    <section><h3>${escapeHTML(heading)}</h3>${breakdowns[key].slice(0, 5).map(item => `
+      <div class="outcome-breakdown-row"><span>${escapeHTML(label(item.name))}<small>${Number(item.count || 0)} video${Number(item.count || 0) === 1 ? '' : 's'}</small></span><strong>${escapeHTML(formatOutcomeValue(item.average, goal.unit, goal.currency))} avg</strong></div>`).join('')}</section>`).join('') : empty('Breakdowns appear once measured videos carry comparable pillar, format, or provider evidence.');
+  $('#outcome-policy').textContent = outcome.evidencePolicy;
 }
 
 function renderLearning(learning = {}) {
@@ -586,6 +647,11 @@ function renderOperator(strategy, runs, system) {
     defaultFormat: strategy.default_format,
     defaultLength: strategy.default_length,
     successMetric: strategy.success_metric,
+    primaryKpi: strategy.primary_kpi,
+    targetValue: strategy.target_value,
+    targetWindowDays: strategy.target_window_days,
+    monthlyBudget: strategy.monthly_budget,
+    outcomeCurrency: strategy.outcome_currency,
     constraints: strategy.constraints
   } : {};
   for (const [name, value] of Object.entries(mapping)) {
@@ -1435,6 +1501,9 @@ function strategyFormData(status = ui.state?.channelStrategy?.status || 'draft')
     contentPillars: values.contentPillars.split(',').map(value => value.trim()).filter(Boolean),
     cadencePerWeek: Number(values.cadencePerWeek),
     videosPerRun: Number(values.videosPerRun),
+    targetValue: values.targetValue === '' ? null : Number(values.targetValue),
+    targetWindowDays: Number(values.targetWindowDays),
+    monthlyBudget: values.monthlyBudget === '' ? null : Number(values.monthlyBudget),
     status
   };
 }

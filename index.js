@@ -275,7 +275,7 @@ class YouTubeAutomationAgent {
       if (typeof body.strategyContext !== 'object' || Array.isArray(body.strategyContext)) {
         return { valid: false, status: 400, error: 'strategyContext must be an object' };
       }
-      const limits = { angle: 500, rationale: 1000, audience: 500, objective: 1000, valueProposition: 1000, constraints: 2000 };
+      const limits = { angle: 500, rationale: 1000, audience: 500, objective: 1000, valueProposition: 1000, constraints: 2000, pillar: 100 };
       value.strategyContext = {};
       for (const [key, max] of Object.entries(limits)) {
         if (body.strategyContext[key] === undefined || body.strategyContext[key] === null) continue;
@@ -320,11 +320,26 @@ class YouTubeAutomationAgent {
     const defaultFormat = text('defaultFormat', current.default_format || 'explainer', 20).toLowerCase();
     const defaultLength = text('defaultLength', current.default_length || 'medium', 20).toLowerCase();
     const status = text('status', current.status || 'draft', 20).toLowerCase();
+    const primaryKpi = text('primaryKpi', current.primary_kpi || 'views', 30).toLowerCase();
+    const outcomeCurrency = text('outcomeCurrency', current.outcome_currency || 'USD', 3).toUpperCase();
     if (!['explainer', 'tutorial', 'list', 'review', 'story'].includes(defaultFormat)) {
       throw new Error('defaultFormat is not supported');
     }
     if (!['short', 'medium', 'long'].includes(defaultLength)) throw new Error('defaultLength is not supported');
     if (!['draft', 'active', 'paused'].includes(status)) throw new Error('status must be draft, active, or paused');
+    if (!['views', 'watch_hours', 'subscribers', 'engagement', 'revenue'].includes(primaryKpi)) {
+      throw new Error('primaryKpi is not supported');
+    }
+    if (!/^[A-Z]{3}$/.test(outcomeCurrency)) throw new Error('outcomeCurrency must be a three-letter currency code');
+    const optionalNumber = (key, fallback, min, max) => {
+      const raw = body[key] ?? fallback;
+      if (raw === undefined || raw === null || raw === '') return null;
+      const value = Number(raw);
+      if (!Number.isFinite(value) || value < min || value > max) {
+        throw new Error(`${key} must be a number from ${min} to ${max}`);
+      }
+      return value;
+    };
 
     return {
       objective,
@@ -336,6 +351,11 @@ class YouTubeAutomationAgent {
       defaultFormat,
       defaultLength,
       successMetric: text('successMetric', current.success_metric, 300),
+      primaryKpi,
+      targetValue: optionalNumber('targetValue', current.target_value, 0.01, 1000000000),
+      targetWindowDays: integer('targetWindowDays', current.target_window_days || 28, 7, 365),
+      monthlyBudget: optionalNumber('monthlyBudget', current.monthly_budget, 0, 10000000),
+      outcomeCurrency,
       constraints: text('constraints', current.constraints, 2000),
       status
     };
@@ -393,6 +413,17 @@ class YouTubeAutomationAgent {
         res.json({ ...analytics, learning });
       } catch (error) {
         res.status(500).json({ error: error.message });
+      }
+    });
+
+    this.app.get('/api/outcomes', async (_req, res) => {
+      try {
+        const learning = this.agents.analytics?.getLearningSummary
+          ? await this.agents.analytics.getLearningSummary()
+          : { outcome: null };
+        return res.json({ success: true, result: learning.outcome || null });
+      } catch (error) {
+        return res.status(500).json({ success: false, error: error.message });
       }
     });
 
@@ -1301,6 +1332,7 @@ class YouTubeAutomationAgent {
       generated.channelGoal = strategyContext.objective || profile.goal || null;
       generated.channelValueProposition = strategyContext.valueProposition || null;
       generated.channelConstraints = strategyContext.constraints || null;
+      generated.contentPillar = strategyContext.pillar || null;
       generated.callToAction = profile.call_to_action || null;
       generated.researchSources = Array.isArray(strategyContext.researchSources)
         ? strategyContext.researchSources

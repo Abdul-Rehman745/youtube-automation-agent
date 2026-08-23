@@ -118,6 +118,14 @@ Open **Analytics → What the agent learned** to review the evidence and confide
 
 When an approved learning calls for better packaging, Lumen prepares a control plus title and thumbnail variants for new videos. Review Studio shows those options before approval; the selected combination is the only one handed to the publishing queue. Lumen does not silently swap live YouTube metadata.
 
+### Align the channel with outcomes and ROI
+
+The Autonomous Operator strategy can define a measurable primary outcome—views, watch hours, net subscribers, engagement rate, or estimated revenue—plus a numeric target, evidence window, monthly production budget, and currency. The existing free-text outcome context remains available for goals that need human nuance.
+
+At each real analytics window, Lumen stores subscriber gains and losses, watch hours, monetization evidence when the channel exposes it, and known production costs from durable scene records. **Analytics → Outcome & ROI Studio** shows target progress, evidence coverage, net subscribers, estimated revenue, known cost, ROI, and comparisons by content pillar, format, and production provider.
+
+Missing evidence is explicit. A channel without monetization access shows revenue as unavailable rather than zero, and ROI stays unavailable until both revenue and complete cost evidence exist. When at least two comparable videos exist in each group, the learning engine can propose reallocating future content toward the pillar or format that best advances the configured outcome. That proposal remains pending until you approve it; Lumen never changes the strategy or budget silently.
+
 ### Find the exact scene that lost viewers
 
 At each real analytics window, AgentTube also requests YouTube's audience-retention curve and maps its 100 elapsed-time points onto the stored scene durations. Open **Analytics → Scene-aware retention** to see the curve divided by scene, compare absolute and relative retention, and inspect drop-off, rewatch, strong-hold, or steady signals for each beat.
@@ -141,7 +149,7 @@ When three or more commenters ask for the same thing, the analysis mines an **au
 | Production | Generates narration and visuals, then assembles a real MP4 | Provider choice and media fallbacks |
 | Review | Runs quality checks and opens the video in Review Studio | Facts, media rights, edits, approval |
 | Publish | Schedules and uploads approved content | Privacy, timing, final decision |
-| Learn | Captures 24-hour and 7-day evidence, then proposes the next move | Approve or reject each learning before it guides planning |
+| Learn | Captures 24-hour and 7-day evidence, measures the configured outcome and economics, then proposes the next move | Choose the KPI and approve or reject each learning before it guides planning |
 
 Lumen distinguishes real MP4 output from simulated placeholders. Simulated output cannot enter the approval or publishing path.
 
@@ -374,7 +382,7 @@ curl -X POST http://localhost:3456/api/readiness/run \
 curl -X PUT http://localhost:3456/api/operator/strategy \
   -H "Content-Type: application/json" \
   -H "x-api-key: $API_KEY" \
-  -d '{"objective":"Own practical AI automation for small teams","audience":"Small business operators","contentPillars":["AI workflows","Automation playbooks"],"cadencePerWeek":2,"videosPerRun":2,"defaultFormat":"tutorial","defaultLength":"medium","status":"draft"}'
+  -d '{"objective":"Own practical AI automation for small teams","audience":"Small business operators","contentPillars":["AI workflows","Automation playbooks"],"cadencePerWeek":2,"videosPerRun":2,"defaultFormat":"tutorial","defaultLength":"medium","primaryKpi":"subscribers","targetValue":100,"targetWindowDays":28,"monthlyBudget":250,"outcomeCurrency":"USD","status":"draft"}'
 
 # activate the saved strategy and start a background operator run
 curl -X POST http://localhost:3456/api/operator/start \
@@ -391,6 +399,9 @@ curl http://localhost:3456/schedule
 
 # get analytics
 curl http://localhost:3456/analytics
+
+# get the goal-aligned Outcome & ROI Studio summary
+curl http://localhost:3456/api/outcomes
 
 # approve an evidence-backed learning for future autonomous plans
 curl -X POST http://localhost:3456/api/learning/recommendations/:recommendationId/approve \

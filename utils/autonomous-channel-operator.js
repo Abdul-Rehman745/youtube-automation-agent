@@ -134,6 +134,7 @@ class AutonomousChannelOperator {
               strategyContext: {
                 angle: item.angle,
                 rationale: item.rationale,
+                pillar: item.pillar,
                 audience: strategy.audience,
                 objective: strategy.objective,
                 valueProposition: strategy.value_proposition,

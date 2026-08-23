@@ -335,7 +335,7 @@ class ContentStrategyAgent {
     const prompt = `You are the strategy lead for an autonomous YouTube channel.
 Turn the channel strategy and the supplied research signals into a focused content plan.
 Return only a valid JSON array with exactly ${targetCount} items using this shape:
-[{"topic":"specific video topic","angle":"distinct audience-relevant angle","rationale":"why this advances the channel objective using the supplied evidence","format":"explainer|tutorial|list|review|story","length":"short|medium|long","sourceUrls":["exact URL from the supplied source catalog"]}]
+[{"topic":"specific video topic","pillar":"one exact content pillar from the supplied strategy","angle":"distinct audience-relevant angle","rationale":"why this advances the channel objective using the supplied evidence","format":"explainer|tutorial|list|review|story","length":"short|medium|long","sourceUrls":["exact URL from the supplied source catalog"]}]
 
 Channel objective: ${channelStrategy.objective}
 Audience: ${channelStrategy.audience}
@@ -344,6 +344,9 @@ Content pillars: ${(channelStrategy.contentPillars || []).join(', ')}
 Preferred format: ${channelStrategy.default_format}
 Preferred length: ${channelStrategy.default_length}
 Success metric: ${channelStrategy.success_metric || 'not specified'}
+Primary KPI: ${channelStrategy.primary_kpi || 'views'}
+Target: ${channelStrategy.target_value || 'not set'} per ${channelStrategy.target_window_days || 28} days
+Monthly production budget: ${channelStrategy.monthly_budget ?? 'not set'} ${channelStrategy.outcome_currency || 'USD'}
 Constraints: ${channelStrategy.constraints || 'none'}
 Research signals: ${JSON.stringify(research.signals)}
 Allowed source catalog: ${JSON.stringify(research.sourceCatalog)}
@@ -373,6 +376,7 @@ Do not invent trend data, statistics, sources, URLs, or factual claims. Use only
 
     return candidates.slice(0, targetCount).map((topic, index) => ({
       topic,
+      pillar: pillars.find(pillar => topic.toLowerCase().includes(String(pillar).toLowerCase())) || pillars[index % Math.max(1, pillars.length)] || '',
       angle: `${topic} through the lens of ${channelStrategy.value_proposition || channelStrategy.objective}`,
       rationale: readableSignals.includes(topic)
         ? 'Matches a current YouTube or configured competitor signal and fits the channel strategy.'
@@ -389,10 +393,12 @@ Do not invent trend data, statistics, sources, URLs, or factual claims. Use only
     const formats = new Set(['explainer', 'tutorial', 'list', 'review', 'story']);
     const lengths = new Set(['short', 'medium', 'long']);
     const allowedSourceUrls = new Set((research.sourceCatalog || []).map(source => source.url));
+    const pillars = channelStrategy.contentPillars || [];
     const seen = new Set();
     return plan
       .map(item => ({
         topic: String(item.topic || '').trim().slice(0, 200),
+        pillar: pillars.find(pillar => String(pillar).toLowerCase() === String(item.pillar || '').trim().toLowerCase()) || '',
         angle: String(item.angle || '').trim().slice(0, 500),
         rationale: String(item.rationale || '').trim().slice(0, 1000),
         format: formats.has(String(item.format || '').toLowerCase())

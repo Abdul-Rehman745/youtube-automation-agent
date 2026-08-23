@@ -10,7 +10,7 @@ class ChannelLearningEngine {
   }
 
   async capture(performanceReport, context = {}, measurementWindow = 'rolling') {
-    const metrics = this.normalizeMetrics(performanceReport);
+    const metrics = this.normalizeMetrics(performanceReport, context);
     const attributes = this.extractAttributes(performanceReport, context);
     const prior = (await this.db.listPerformanceSnapshots({
       measurementWindow,
@@ -42,20 +42,57 @@ class ChannelLearningEngine {
     return snapshot;
   }
 
-  normalizeMetrics(report) {
+  normalizeMetrics(report, context = {}) {
     const analytics = report.analytics || {};
     const views = analytics.views || {};
     const watchTime = analytics.watchTime || {};
     const engagement = analytics.engagement || {};
+    const outcomes = analytics.outcomes || {};
+    const impressions = this.number(views.totalImpressions || report.thumbnailMetrics?.impressions);
+    const totalViews = this.number(views.totalViews);
+    const watchMinutes = this.number(watchTime.totalWatchTime);
+    const netSubscribers = outcomes.subscribersAvailable ? this.optionalNumber(outcomes.netSubscribers) : null;
+    const estimatedRevenue = outcomes.revenueAvailable ? this.optionalNumber(outcomes.estimatedRevenue) : null;
+    const cost = context.productionCost || {};
+    const productionCost = this.optionalNumber(cost.amount);
+    const revenueCurrency = outcomes.currency || null;
+    const costCurrency = cost.currency || null;
+    const currencyCompatible = productionCost === 0 || (
+      revenueCurrency && costCurrency && String(revenueCurrency).toUpperCase() === String(costCurrency).toUpperCase()
+    );
     return {
-      views: this.number(views.totalViews),
-      impressions: this.number(views.totalImpressions || report.thumbnailMetrics?.impressions),
+      views: totalViews,
+      impressions,
       ctr: this.number(report.thumbnailMetrics?.clickThroughRate ?? views.averageCTR),
       retention: this.number(watchTime.averageViewPercentage),
       averageViewDuration: this.number(watchTime.averageViewDuration),
-      watchMinutes: this.number(watchTime.totalWatchTime),
+      watchMinutes,
+      watchHours: Number((watchMinutes / 60).toFixed(3)),
       engagementRate: this.number(engagement.engagementRate),
-      performanceScore: this.number(report.performance?.score)
+      performanceScore: this.number(report.performance?.score),
+      subscribersGained: outcomes.subscribersAvailable ? this.optionalNumber(outcomes.subscribersGained) : null,
+      subscribersLost: outcomes.subscribersAvailable ? this.optionalNumber(outcomes.subscribersLost) : null,
+      netSubscribers,
+      estimatedRevenue,
+      revenueCurrency,
+      monetizedPlaybacks: outcomes.revenueAvailable ? this.optionalNumber(outcomes.monetizedPlaybacks) : null,
+      playbackBasedCpm: outcomes.revenueAvailable ? this.optionalNumber(outcomes.playbackBasedCpm) : null,
+      subscribersPerThousandImpressions: netSubscribers !== null && impressions > 0
+        ? Number(((netSubscribers / impressions) * 1000).toFixed(3))
+        : null,
+      watchHoursPerThousandViews: totalViews > 0 ? Number((((watchMinutes / 60) / totalViews) * 1000).toFixed(3)) : null,
+      revenuePerThousandViews: estimatedRevenue !== null && totalViews > 0
+        ? Number(((estimatedRevenue / totalViews) * 1000).toFixed(3))
+        : null,
+      productionCost,
+      costCurrency,
+      costComplete: cost.complete === true,
+      netRevenue: estimatedRevenue !== null && productionCost !== null && cost.complete === true && currencyCompatible
+        ? Number((estimatedRevenue - productionCost).toFixed(3))
+        : null,
+      roi: estimatedRevenue !== null && productionCost !== null && productionCost > 0 && cost.complete === true && currencyCompatible
+        ? Number((((estimatedRevenue - productionCost) / productionCost) * 100).toFixed(1))
+        : null
     };
   }
 
@@ -67,6 +104,7 @@ class ChannelLearningEngine {
     const hook = this.text(script.hook || script.introduction || '');
     return {
       topic: strategy.topic || '',
+      pillar: strategy.contentPillar || strategy.pillar || 'unknown',
       surface: context.contentFormat === 'short' ? 'shorts' : 'long_form',
       format: context.contentFormat === 'short'
         ? 'shorts'
@@ -77,21 +115,29 @@ class ChannelLearningEngine {
       thumbnailStyle: this.slug(
         thumbnail.concept?.composition || thumbnail.concept?.style || thumbnail.style || 'unknown'
       ),
+      provider: context.productionCost?.providers?.length === 1 ? this.slug(context.productionCost.providers[0]) : 'mixed_or_unknown',
       source: strategy.planRationale ? 'autonomous_operator' : 'manual'
     };
   }
 
   calculateBaseline(snapshots) {
-    const keys = ['views', 'impressions', 'ctr', 'retention', 'averageViewDuration', 'watchMinutes', 'engagementRate', 'performanceScore'];
+    const keys = [
+      'views', 'impressions', 'ctr', 'retention', 'averageViewDuration', 'watchMinutes', 'watchHours',
+      'engagementRate', 'performanceScore', 'netSubscribers', 'subscribersPerThousandImpressions',
+      'estimatedRevenue', 'revenuePerThousandViews', 'productionCost', 'netRevenue', 'roi'
+    ];
     return Object.fromEntries(keys.map(key => [key, this.median(
-      snapshots.map(snapshot => this.number(snapshot.metrics?.[key])).filter(value => Number.isFinite(value))
+      snapshots.map(snapshot => this.optionalNumber(snapshot.metrics?.[key])).filter(value => value !== null)
     )]));
   }
 
   calculateDeltas(metrics, baseline) {
     return Object.fromEntries(Object.entries(metrics).map(([key, value]) => {
-      const reference = this.number(baseline[key]);
-      return [key, reference > 0 ? Number((((value - reference) / reference) * 100).toFixed(1)) : null];
+      const numericValue = this.optionalNumber(value);
+      const reference = this.optionalNumber(baseline[key]);
+      return [key, numericValue !== null && reference !== null && reference !== 0
+        ? Number((((numericValue - reference) / Math.abs(reference)) * 100).toFixed(1))
+        : null];
     }));
   }
 
@@ -102,13 +148,17 @@ class ChannelLearningEngine {
   }
 
   async refreshRecommendations() {
-    const all = await this.db.listPerformanceSnapshots({ reliableOnly: true });
+    const [all, strategy] = await Promise.all([
+      this.db.listPerformanceSnapshots({ reliableOnly: true }),
+      this.db.getChannelStrategy ? this.db.getChannelStrategy() : Promise.resolve(null)
+    ]);
     const snapshots = this.preferredSnapshotPerVideo(all);
     if (snapshots.length < 2) return [];
 
     const candidates = [
       ...this.buildDimensionRecommendations(snapshots),
-      ...this.buildChannelRecommendations(snapshots)
+      ...this.buildChannelRecommendations(snapshots),
+      ...this.buildOutcomeRecommendations(snapshots, strategy)
     ];
     const saved = [];
     for (const candidate of candidates) {
@@ -201,11 +251,54 @@ class ChannelLearningEngine {
     return recommendations;
   }
 
+  buildOutcomeRecommendations(snapshots, strategy = {}) {
+    const goal = this.outcomeGoal(strategy);
+    if (!goal || snapshots.length < 4) return [];
+    const eligible = snapshots.filter(snapshot => this.outcomeMetricValue(snapshot, goal) !== null);
+    if (eligible.length < 4) return [];
+    const candidates = [];
+    for (const dimension of ['pillar', 'format']) {
+      const groups = new Map();
+      for (const snapshot of eligible) {
+        const value = snapshot.contentAttributes?.[dimension];
+        const metric = this.outcomeMetricValue(snapshot, goal);
+        if (!value || value === 'unknown' || value === 'mixed_or_unknown' || metric === null) continue;
+        if (!groups.has(value)) groups.set(value, []);
+        groups.get(value).push(metric);
+      }
+      const ranked = [...groups.entries()]
+        .filter(([, values]) => values.length >= 2)
+        .map(([value, values]) => ({ value, count: values.length, average: this.average(values) }))
+        .sort((a, b) => b.average - a.average);
+      if (ranked.length < 2) continue;
+      const best = ranked[0];
+      const weakest = ranked.at(-1);
+      const meaningfulDifference = best.average - weakest.average;
+      const relativeDifference = Math.abs(weakest.average) > 0
+        ? meaningfulDifference / Math.abs(weakest.average)
+        : best.average > 0 ? 1 : 0;
+      if (meaningfulDifference <= 0 || relativeDifference < 0.2) continue;
+      candidates.push({
+        category: 'outcome_alignment',
+        title: `Allocate more ${dimension} capacity to ${this.readable(best.value)}`,
+        rationale: `${this.readable(best.value)} averaged ${this.formatOutcome(best.average, goal)} across ${best.count} videos versus ${this.formatOutcome(weakest.average, goal)} for ${this.readable(weakest.value)}, aligned to the configured ${goal.label.toLowerCase()} goal.`,
+        evidence: { primaryKpi: goal.id, metric: goal.metric, dimension, best, weakest, minimumSamplesPerGroup: 2 },
+        proposedChange: {
+          target: 'future_plans', dimension, prefer: best.value, deprioritize: weakest.value,
+          primaryKpi: goal.id, autoApply: false
+        },
+        confidence: best.count >= 4 && weakest.count >= 4 ? 'high' : 'medium'
+      });
+    }
+    return candidates;
+  }
+
   async getSummary() {
-    const [snapshots, recommendations, retentionSnapshots] = await Promise.all([
+    const [snapshots, recommendations, retentionSnapshots, strategy] = await Promise.all([
       this.db.listPerformanceSnapshots({ reliableOnly: true }),
       this.db.listLearningRecommendations({ limit: 50 }),
-      this.db.listRetentionSnapshots ? this.db.listRetentionSnapshots({ limit: 12 }) : Promise.resolve([])
+      this.db.listRetentionSnapshots ? this.db.listRetentionSnapshots({ limit: 12 }) : Promise.resolve([]),
+      this.db.getChannelStrategy ? this.db.getChannelStrategy() : Promise.resolve(null)
     ]);
     const preferred = this.preferredSnapshotPerVideo(snapshots);
     return {
@@ -221,12 +314,121 @@ class ChannelLearningEngine {
       pendingCount: recommendations.filter(item => item.status === 'pending').length,
       lastMeasuredAt: snapshots[0]?.measuredAt || null,
       evidencePolicy: 'Only real YouTube analytics are eligible; simulated fallbacks are excluded.',
+      outcome: this.buildOutcomeSummary(preferred, strategy),
       retention: {
         snapshotCount: retentionSnapshots.length,
         longFormCount: retentionSnapshots.filter(item => item.surface === 'long_form').length,
         shortsCount: retentionSnapshots.filter(item => item.surface === 'shorts').length,
         snapshots: retentionSnapshots
       }
+    };
+  }
+
+  outcomeGoal(strategy = {}) {
+    if (!strategy) return null;
+    const definitions = {
+      views: { id: 'views', metric: 'views', label: 'Views', unit: 'count', aggregation: 'sum' },
+      watch_hours: { id: 'watch_hours', metric: 'watchHours', label: 'Watch hours', unit: 'hours', aggregation: 'sum' },
+      subscribers: { id: 'subscribers', metric: 'netSubscribers', label: 'Net subscribers', unit: 'count', aggregation: 'sum' },
+      engagement: { id: 'engagement', metric: 'engagementRate', label: 'Engagement rate', unit: 'percent', aggregation: 'average' },
+      revenue: { id: 'revenue', metric: 'estimatedRevenue', label: 'Estimated revenue', unit: 'currency', aggregation: 'sum' }
+    };
+    const definition = definitions[strategy.primary_kpi] || definitions.views;
+    return {
+      ...definition,
+      targetValue: this.optionalNumber(strategy.target_value),
+      windowDays: Math.max(7, Math.min(365, Number(strategy.target_window_days || 28))),
+      currency: String(strategy.outcome_currency || 'USD').toUpperCase(),
+      monthlyBudget: this.optionalNumber(strategy.monthly_budget),
+      description: strategy.success_metric || ''
+    };
+  }
+
+  buildOutcomeSummary(snapshots = [], strategy = null) {
+    const goal = this.outcomeGoal(strategy);
+    if (!goal) {
+      return { configured: false, available: false, goal: null, evidencePolicy: 'Configure a channel strategy to activate outcome tracking.' };
+    }
+    const cutoff = Date.now() - goal.windowDays * 86400000;
+    const recent = snapshots.filter(snapshot => {
+      const measured = new Date(snapshot.measuredAt || snapshot.measured_at || 0).getTime();
+      return Number.isFinite(measured) && measured >= cutoff;
+    });
+    const values = recent
+      .map(snapshot => this.outcomeMetricValue(snapshot, goal))
+      .filter(value => value !== null);
+    const observed = values.length
+      ? goal.aggregation === 'average' ? this.average(values) : values.reduce((sum, value) => sum + value, 0)
+      : null;
+    const progressPercent = observed !== null && goal.targetValue !== null && goal.targetValue > 0
+      ? Number(Math.max(0, Math.min(999, (observed / goal.targetValue) * 100)).toFixed(1))
+      : null;
+    const sumAvailable = key => {
+      const available = recent.map(snapshot => this.optionalNumber(snapshot.metrics?.[key])).filter(value => value !== null);
+      return { value: available.length ? available.reduce((sum, value) => sum + value, 0) : null, count: available.length };
+    };
+    const subscribers = sumAvailable('netSubscribers');
+    const watchHours = sumAvailable('watchHours');
+    const revenueValues = recent
+      .filter(snapshot => String(snapshot.metrics?.revenueCurrency || 'USD').toUpperCase() === goal.currency)
+      .map(snapshot => this.optionalNumber(snapshot.metrics?.estimatedRevenue)).filter(value => value !== null);
+    const revenue = { value: revenueValues.length ? revenueValues.reduce((sum, value) => sum + value, 0) : null, count: revenueValues.length };
+    const costValues = recent
+      .filter(snapshot => this.optionalNumber(snapshot.metrics?.productionCost) === 0 || String(snapshot.metrics?.costCurrency || '').toUpperCase() === goal.currency)
+      .map(snapshot => this.optionalNumber(snapshot.metrics?.productionCost)).filter(value => value !== null);
+    const cost = { value: costValues.length ? costValues.reduce((sum, value) => sum + value, 0) : null, count: costValues.length };
+    const costsComplete = recent.length > 0 && cost.count === recent.length && recent.every(snapshot => snapshot.metrics?.costComplete === true);
+    const roi = revenue.count === recent.length && costsComplete && cost.value > 0
+      ? Number((((revenue.value - cost.value) / cost.value) * 100).toFixed(1))
+      : null;
+    const breakdowns = {};
+    for (const dimension of ['pillar', 'format', 'provider']) {
+      const groups = new Map();
+      for (const snapshot of recent) {
+        const name = snapshot.contentAttributes?.[dimension];
+        const value = this.outcomeMetricValue(snapshot, goal);
+        if (!name || name === 'unknown' || name === 'mixed_or_unknown' || value === null) continue;
+        if (!groups.has(name)) groups.set(name, []);
+        groups.get(name).push(value);
+      }
+      breakdowns[dimension] = [...groups.entries()]
+        .map(([name, groupValues]) => ({
+          name,
+          count: groupValues.length,
+          average: Number(this.average(groupValues).toFixed(3)),
+          total: Number(groupValues.reduce((sum, value) => sum + value, 0).toFixed(3))
+        }))
+        .sort((a, b) => b.average - a.average);
+    }
+    return {
+      configured: true,
+      available: observed !== null,
+      goal,
+      observed: observed === null ? null : Number(observed.toFixed(3)),
+      formattedObserved: observed === null ? 'Unavailable' : this.formatOutcome(observed, goal),
+      progressPercent,
+      snapshotCount: recent.length,
+      measuredVideoCount: values.length,
+      economics: {
+        currency: goal.currency,
+        netSubscribers: subscribers.value,
+        watchHours: watchHours.value === null ? null : Number(watchHours.value.toFixed(3)),
+        estimatedRevenue: revenue.value === null ? null : Number(revenue.value.toFixed(3)),
+        knownProductionCost: cost.value === null ? null : Number(cost.value.toFixed(3)),
+        costsComplete,
+        roi,
+        monthlyBudget: goal.monthlyBudget,
+        budgetUsedPercent: goal.monthlyBudget > 0 && cost.value !== null
+          ? Number(((cost.value / goal.monthlyBudget) * 100).toFixed(1))
+          : null
+      },
+      coverage: {
+        subscribers: { measured: subscribers.count, total: recent.length },
+        revenue: { measured: revenue.count, total: recent.length },
+        cost: { measured: cost.count, total: recent.length }
+      },
+      breakdowns,
+      evidencePolicy: 'Only real YouTube measurements are included. Missing subscriber, revenue, or cost evidence remains unavailable and is never converted to zero.'
     };
   }
 
@@ -268,7 +470,7 @@ class ChannelLearningEngine {
   }
 
   median(values) {
-    if (!values.length) return 0;
+    if (!values.length) return null;
     const sorted = [...values].sort((a, b) => a - b);
     const middle = Math.floor(sorted.length / 2);
     return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
@@ -285,6 +487,32 @@ class ChannelLearningEngine {
   number(value) {
     const number = Number(value);
     return Number.isFinite(number) ? number : 0;
+  }
+
+  optionalNumber(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  outcomeMetricValue(snapshot, goal) {
+    if (goal.id === 'revenue' && String(snapshot.metrics?.revenueCurrency || 'USD').toUpperCase() !== goal.currency) {
+      return null;
+    }
+    return this.optionalNumber(snapshot.metrics?.[goal.metric]);
+  }
+
+  formatOutcome(value, goal) {
+    if (goal.unit === 'currency') {
+      try {
+        return new Intl.NumberFormat('en-US', { style: 'currency', currency: goal.currency, maximumFractionDigits: 2 }).format(value);
+      } catch (_error) {
+        return `${goal.currency} ${Number(value).toFixed(2)}`;
+      }
+    }
+    if (goal.unit === 'percent') return `${Number(value).toFixed(1)}%`;
+    if (goal.unit === 'hours') return `${Number(value).toFixed(1)} hours`;
+    return new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 }).format(value);
   }
 
   text(value) {
