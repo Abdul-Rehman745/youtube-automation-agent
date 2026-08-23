@@ -23,6 +23,8 @@ const { GenerationRecoveryService, GENERATION_STAGES } = require('./utils/genera
 const { ProvenanceService } = require('./utils/provenance-service');
 const { SceneRepairService } = require('./utils/scene-repair-service');
 const { ShortsRepurposingService } = require('./utils/shorts-repurposing-service');
+const { AudienceEngagementService } = require('./utils/audience-engagement-service');
+const { AITextService } = require('./utils/ai-text-service');
 const { version } = require('./package.json');
 const chalk = require('chalk');
 
@@ -44,6 +46,7 @@ class YouTubeAutomationAgent {
     this.provenance = null;
     this.scenes = null;
     this.shorts = null;
+    this.engagement = null;
     this.setupRequired = false;
   }
 
@@ -101,6 +104,12 @@ class YouTubeAutomationAgent {
         { logger: this.logger }
       );
       this.shorts = new ShortsRepurposingService(this.db, this.agents.publishing, { logger: this.logger });
+      this.engagement = new AudienceEngagementService(
+        this.db,
+        this.credentials,
+        new AITextService(this.credentials),
+        { logger: this.logger }
+      );
 
       // Show which pipeline stages will run for real vs. be simulated
       const capabilities = await this.logCapabilitySummary();
@@ -421,7 +430,7 @@ class YouTubeAutomationAgent {
 
     this.app.get('/api/dashboard', async (_req, res) => {
       try {
-        const [stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics, learning, activation, channelStrategy, operatorRuns, readiness] = await Promise.all([
+        const [stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics, learning, activation, channelStrategy, operatorRuns, readiness, engagement] = await Promise.all([
           this.db.getStats(),
           this.db.listGenerationJobs(20),
           this.db.getPipelineOverview(50),
@@ -444,12 +453,20 @@ class YouTubeAutomationAgent {
           this.db.listOperatorRuns(10),
           this.readiness
             ? this.readiness.getSummary()
-            : Promise.resolve({ status: 'unverified', stale: false, blockingFailures: [], checks: [] })
+            : Promise.resolve({ status: 'unverified', stale: false, blockingFailures: [], checks: [] }),
+          this.engagement
+            ? this.engagement.getSummary()
+            : Promise.resolve({
+                videosTracked: 0, pendingDrafts: 0, postedToday: 0, needsAttentionCount: 0,
+                pendingAudienceIdeas: 0, postingEnabled: false, postingDisabledReason: 'setup_required',
+                insights: [], recentThemes: [],
+                evidencePolicy: 'Comments are fetched read-only from YouTube. Replies post only after operator approval, and fallback analysis never proposes drafts or ideas.'
+              })
         ]);
         if (this.telemetry) void this.telemetry.sync(activation);
         res.json({
           stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics, learning, activation,
-          channelStrategy, operatorRuns, readiness,
+          channelStrategy, operatorRuns, readiness, engagement,
           system: {
             initialized: this.isInitialized,
             setupRequired: this.setupRequired,
@@ -927,6 +944,77 @@ class YouTubeAutomationAgent {
         });
       } catch (error) {
         return res.status(error.status || 400).json({ error: error.message });
+      }
+    });
+
+    this.app.get('/api/engagement/:videoId', async (req, res) => {
+      try {
+        const videoId = String(req.params.videoId || '').trim();
+        if (!/^[A-Za-z0-9_-]{1,100}$/.test(videoId)) {
+          return res.status(400).json({ error: 'A valid YouTube video ID is required' });
+        }
+        const [insight, comments, drafts] = await Promise.all([
+          this.db.getEngagementInsight(videoId),
+          this.db.listAudienceComments({ videoId, limit: 200 }),
+          this.db.listReplyDrafts({ videoId, limit: 100 })
+        ]);
+        return res.json({ success: true, result: { insight, comments, drafts } });
+      } catch (error) {
+        return res.status(error.status || 400).json({ success: false, error: error.message });
+      }
+    });
+
+    this.app.post('/api/engagement/:videoId/sync', protect, async (req, res) => {
+      try {
+        if (!this.engagement) return res.status(503).json({ error: 'Audience engagement requires completed setup' });
+        const videoId = String(req.params.videoId || '').trim();
+        if (!/^[A-Za-z0-9_-]{1,100}$/.test(videoId)) {
+          return res.status(400).json({ error: 'A valid YouTube video ID is required' });
+        }
+        const sync = await this.engagement.syncVideoComments(videoId, req.body || {});
+        const insight = sync.fetched > 0 || req.body?.analyze === true
+          ? await this.engagement.analyzeVideo(videoId)
+          : sync.insight;
+        return res.status(202).json({ success: true, result: { ...sync, insight } });
+      } catch (error) {
+        return res.status(error.status || 400).json({ success: false, error: error.message, code: error.code });
+      }
+    });
+
+    this.app.post('/api/engagement/:videoId/draft-replies', protect, async (req, res) => {
+      try {
+        if (!this.engagement) return res.status(503).json({ error: 'Audience engagement requires completed setup' });
+        const result = await this.engagement.draftReplies(String(req.params.videoId || '').trim(), req.body || {});
+        return res.json({ success: true, result });
+      } catch (error) {
+        return res.status(error.status || 400).json({ success: false, error: error.message, code: error.code });
+      }
+    });
+
+    this.app.patch('/api/engagement/replies/:draftId', protect, async (req, res) => {
+      try {
+        if (!this.engagement) return res.status(503).json({ error: 'Audience engagement requires completed setup' });
+        const result = await this.engagement.updateReplyDraft(req.params.draftId, req.body || {});
+        return res.json({ success: true, result });
+      } catch (error) {
+        return res.status(error.status || 400).json({ success: false, error: error.message, code: error.code });
+      }
+    });
+
+    this.app.post('/api/engagement/replies/:draftId/approve', protect, async (req, res) => {
+      try {
+        if (!this.engagement) return res.status(503).json({ error: 'Audience engagement requires completed setup' });
+        const result = await this.engagement.approveReplyDraft(req.params.draftId, req.body || {});
+        await this.operator.notify({
+          type: 'audience_reply_posted',
+          level: 'success',
+          title: 'Audience reply posted',
+          message: `A reply was posted on video ${result.videoId}`,
+          data: { draftId: result.id, videoId: result.videoId, postedCommentId: result.postedCommentId }
+        });
+        return res.json({ success: true, result });
+      } catch (error) {
+        return res.status(error.status || 400).json({ success: false, error: error.message, code: error.code });
       }
     });
 
