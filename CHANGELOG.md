@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added a persistent Audience Engagement Studio: tapered read-only comment sync for recent videos with a strict no-simulated-comments policy
+- Added AI comment classification into themes, sentiment, and flags, with spam/scam/toxic quarantine (flag-only; no moderation actions) and a weak non-AI fallback that never invents insights
+- Added approval-only reply drafting and posting with an explicit confirmation, a youtube.force-ssl re-consent gate, posting evidence, and a daily reply cap
+- Added audience-demand idea mining (3+ repeated asks) into the existing approval-gated recommendations pipeline, feeding approved requests into autonomous planning
+- Added an Engagement dashboard view, five /api/engagement endpoints, and a four-hour engagement sync automation slot
 - Added persistent scene-aware audience-retention snapshots using YouTube's granular elapsed-time curve, with separate long-form and Shorts evidence
 - Mapped retention points onto durable production scenes and classified scene-level drop-off, rewatch, strong-hold, and steady signals
 - Added an accessible dashboard retention curve, scene evidence cards, manual read-only refresh, and stored-evidence API
