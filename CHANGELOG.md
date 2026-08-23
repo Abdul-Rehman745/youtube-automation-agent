@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.9.0 — 2026-08-23
 
 - Added a persistent Audience Engagement Studio: tapered read-only comment sync for recent videos with a strict no-simulated-comments policy
 - Added AI comment classification into themes, sentiment, and flags, with spam/scam/toxic quarantine (flag-only; no moderation actions) and a weak non-AI fallback that never invents insights

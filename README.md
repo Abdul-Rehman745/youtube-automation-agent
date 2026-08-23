@@ -2,23 +2,26 @@
 
 **The open-source AI agent that runs a YouTube channel end to end.**
 
-Research topics → write scripts → generate narration and visuals → assemble videos → optimize metadata → review → schedule → publish → learn from analytics.
+Research topics → write scripts → generate narration and visuals → assemble videos → optimize metadata → review → schedule → publish → learn from analytics and from what your audience says.
 
 [![CI](https://github.com/darkzOGx/youtube-automation-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/darkzOGx/youtube-automation-agent/actions/workflows/ci.yml)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js 18+](https://img.shields.io/badge/node-18%2B-43853d.svg)](package.json)
 
-## What's new on master
+## What's new in v2.9.0
 
-The latest build expands AgentTube from evidence-first long-form production into a repairable, provider-flexible, multi-format channel workflow:
+**The agent now listens to your audience.** Until this release the feedback loop was numbers only — click-through, retention, watch time. It said how people watched, never what they wanted. v2.9.0 closes that gap and rounds out the repairable, provider-flexible, multi-format production workflow:
 
+- **Audience Engagement Studio (new):** sync real YouTube comments on a tapered schedule, review AI-clustered themes and sentiment, and approve or edit every drafted reply before a single one posts. Likely spam, scams, and toxicity are quarantined for you to see, never acted on automatically.
+- **Your audience writes the roadmap (new):** when three or more commenters ask for the same thing, that becomes a content recommendation carrying the comment permalinks as evidence. Approve it and the Autonomous Channel Operator plans the video that answers it.
 - **Scene-aware retention:** collect YouTube's real 100-point audience-retention curve, map it to the durable production timeline, and review scene-specific drop-off, rewatch, and strong-hold evidence before it can guide future work.
 - **Shorts Repurposing Studio:** turn an approved production into three source-scene-backed 9:16 drafts, choose blurred, cropped, or stacked layouts, render mobile captions locally, and approve each Short on its own schedule.
 - **Scene-level repair:** edit, reorder, lock, replace, or regenerate one scene, then rebuild the final MP4 without discarding the rest of the production.
 - **Narration reliability:** missing, stale, simulated, or failed TTS now blocks assembly, approval, scheduling, and publishing; narration-only recovery and reasoned intentional silence are explicit operator actions.
 - **Multi-provider AI video:** route bounded clips across Seedance, MiniMax H3, Gemini Omni Flash, Kling, and Wan with durable external task IDs, paid-seconds caps, hybrid local assembly, and slideshow fallback.
 - **Research and provenance:** retain exact sources, connect factual claims to reviewer-verified evidence, and carry realistic synthetic-media disclosure into YouTube metadata.
-- **Audience Engagement Studio:** sync real YouTube comments on a tapered schedule, review AI-classified themes and sentiment, approve every reply before it posts, and turn repeated audience requests into evidence-backed planning recommendations.
+
+Upgrading from an earlier version? Comment posting needs one YouTube re-authorization to grant the comment permission — until then the studio still syncs, analyzes, and drafts in read-and-draft mode. Run `npm run walkthrough` to re-connect.
 
 See the complete release history in [CHANGELOG.md](CHANGELOG.md).
 
