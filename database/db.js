@@ -231,6 +231,20 @@ class Database {
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       )`,
+      `CREATE TABLE IF NOT EXISTS reply_drafts (
+        id TEXT PRIMARY KEY,
+        comment_id TEXT NOT NULL UNIQUE,
+        video_id TEXT NOT NULL,
+        draft_text TEXT NOT NULL,
+        edited_text TEXT,
+        status TEXT DEFAULT 'proposed',
+        rationale TEXT,
+        posted_comment_id TEXT,
+        posted_at TEXT,
+        failure_reason TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`,
 
       // Keywords Performance
       `CREATE TABLE IF NOT EXISTS keyword_performance (
@@ -2071,6 +2085,103 @@ class Database {
       analyzedAt: row.analyzed_at,
       lastSyncedAt: row.last_synced_at,
       newestCommentAt: row.newest_comment_at
+    };
+  }
+
+  async saveReplyDraft(draft) {
+    const existing = await this.getRow('SELECT id, status FROM reply_drafts WHERE comment_id = ?', [draft.commentId]);
+    if (existing?.status === 'posted') {
+      const error = new Error('A posted reply cannot be replaced');
+      error.status = 409;
+      throw error;
+    }
+    const id = existing?.id || this.generateId('reply');
+    await this.executeQuery(
+      `INSERT INTO reply_drafts (id, comment_id, video_id, draft_text, rationale)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(comment_id) DO UPDATE SET
+         draft_text = excluded.draft_text,
+         rationale = excluded.rationale,
+         edited_text = NULL,
+         status = 'proposed',
+         posted_comment_id = NULL,
+         posted_at = NULL,
+         failure_reason = NULL,
+         updated_at = CURRENT_TIMESTAMP`,
+      [id, draft.commentId, draft.videoId, draft.draftText, draft.rationale || null]
+    );
+    return this.getReplyDraft(id);
+  }
+
+  async getReplyDraft(id) {
+    const row = await this.getRow('SELECT * FROM reply_drafts WHERE id = ?', [id]);
+    return this.parseReplyDraft(row);
+  }
+
+  async listReplyDrafts(options = {}) {
+    const conditions = [];
+    const params = [];
+    if (options.videoId) {
+      conditions.push('video_id = ?');
+      params.push(options.videoId);
+    }
+    if (options.status) {
+      conditions.push('status = ?');
+      params.push(options.status);
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const limit = Math.max(1, Math.min(100, Number(options.limit || 50)));
+    const rows = await this.getAllRows(
+      `SELECT * FROM reply_drafts ${where} ORDER BY updated_at DESC LIMIT ?`,
+      [...params, limit]
+    );
+    return rows.map(row => this.parseReplyDraft(row));
+  }
+
+  async updateReplyDraft(id, changes = {}) {
+    const columns = {
+      editedText: 'edited_text',
+      status: 'status',
+      postedCommentId: 'posted_comment_id',
+      postedAt: 'posted_at',
+      failureReason: 'failure_reason'
+    };
+    const sets = [];
+    const params = [];
+    for (const [key, column] of Object.entries(columns)) {
+      if (key in changes) {
+        sets.push(`${column} = ?`);
+        params.push(changes[key]);
+      }
+    }
+    if (sets.length) {
+      await this.executeQuery(
+        `UPDATE reply_drafts SET ${sets.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        [...params, id]
+      );
+    }
+    return this.getReplyDraft(id);
+  }
+
+  async countReplyDraftsPostedSince(isoTime) {
+    const row = await this.getRow(
+      "SELECT COUNT(*) AS posted FROM reply_drafts WHERE status = 'posted' AND posted_at >= ?",
+      [isoTime]
+    );
+    return Number(row?.posted || 0);
+  }
+
+  parseReplyDraft(row) {
+    if (!row) return null;
+    return {
+      ...row,
+      commentId: row.comment_id,
+      videoId: row.video_id,
+      draftText: row.draft_text,
+      editedText: row.edited_text,
+      postedCommentId: row.posted_comment_id,
+      postedAt: row.posted_at,
+      failureReason: row.failure_reason
     };
   }
 

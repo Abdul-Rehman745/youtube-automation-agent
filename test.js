@@ -48,7 +48,8 @@ class SystemTest {
       { name: 'Agent Loading', test: () => this.testAgentLoading() },
       { name: 'Configuration Files', test: () => this.testConfiguration() },
       { name: 'Audience Comment Store', test: () => this.testAudienceCommentStore() },
-      { name: 'Engagement Insight Store', test: () => this.testEngagementInsightStore() }
+      { name: 'Engagement Insight Store', test: () => this.testEngagementInsightStore() },
+      { name: 'Reply Draft Lifecycle Store', test: () => this.testReplyDraftStore() }
     ];
 
     let passed = 0;
@@ -2291,6 +2292,46 @@ class SystemTest {
     }
 
     this.logger.info('Agent loading test completed successfully');
+  }
+
+  async testReplyDraftStore() {
+    const db = new Database();
+    await db.initialize();
+    const commentId = `rc_test_${Date.now()}`;
+    const videoId = `vid_reply_${Date.now()}`;
+    try {
+      const draft = await db.saveReplyDraft({ commentId, videoId, draftText: 'Thanks! The cache works per scene.', rationale: 'Direct question' });
+      if (!draft || draft.status !== 'proposed') throw new Error('saveReplyDraft did not create a proposed draft');
+
+      const edited = await db.updateReplyDraft(draft.id, { editedText: 'Thanks! Each scene caches separately.' });
+      if (edited.editedText !== 'Thanks! Each scene caches separately.') throw new Error('editedText was not persisted');
+
+      const replaced = await db.saveReplyDraft({ commentId, videoId, draftText: 'New draft text' });
+      if (replaced.id !== draft.id) throw new Error('Re-drafting must reuse the comment row');
+      if (replaced.editedText !== null || replaced.status !== 'proposed') throw new Error('Re-drafting must reset the lifecycle');
+
+      const postedAt = new Date().toISOString();
+      await db.updateReplyDraft(draft.id, { status: 'posted', postedCommentId: 'yt_reply_1', postedAt });
+      const posted = await db.getReplyDraft(draft.id);
+      if (posted.status !== 'posted' || posted.postedCommentId !== 'yt_reply_1') throw new Error('Posting evidence was not stored');
+
+      let blocked = false;
+      try {
+        await db.saveReplyDraft({ commentId, videoId, draftText: 'Should not overwrite' });
+      } catch (error) {
+        blocked = error.status === 409;
+      }
+      if (!blocked) throw new Error('A posted reply draft must never be replaced');
+
+      const postedCount = await db.countReplyDraftsPostedSince(new Date(Date.now() - 60000).toISOString());
+      if (postedCount < 1) throw new Error('countReplyDraftsPostedSince missed the posted draft');
+
+      const listed = await db.listReplyDrafts({ videoId, status: 'posted' });
+      if (listed.length !== 1) throw new Error('listReplyDrafts filter failed');
+    } finally {
+      await db.executeQuery('DELETE FROM reply_drafts WHERE video_id = ?', [videoId]);
+      await db.close();
+    }
   }
 
   async testEngagementInsightStore() {
