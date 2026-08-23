@@ -1,7 +1,6 @@
 const crypto = require('crypto');
 const { Logger } = require('./logger');
 
-// eslint-disable-next-line no-unused-vars -- consumed by postingEnabled() in the reply-posting task, which removes this directive
 const FORCE_SSL_SCOPE = 'https://www.googleapis.com/auth/youtube.force-ssl';
 const COMMENT_FLAGS = ['question', 'request', 'praise', 'correction', 'spam', 'scam', 'toxic'];
 const QUARANTINE_FLAGS = ['spam', 'scam', 'toxic'];
@@ -437,6 +436,127 @@ Comments: ${JSON.stringify(payload)}`;
       throw error;
     }
     return drafts;
+  }
+
+  postingEnabled() {
+    if (!this.credentials?.hasYouTubeScope) return { enabled: false, reason: 'credentials_unavailable' };
+    if (!this.credentials.hasYouTubeScope(FORCE_SSL_SCOPE)) return { enabled: false, reason: 'missing_scope' };
+    return { enabled: true, reason: null };
+  }
+
+  async requireDraft(draftId) {
+    const draft = await this.db.getReplyDraft(draftId);
+    if (!draft) {
+      const error = new Error('Reply draft not found');
+      error.status = 404;
+      throw error;
+    }
+    return draft;
+  }
+
+  async updateReplyDraft(draftId, changes = {}) {
+    const draft = await this.requireDraft(draftId);
+    if (draft.status === 'posted') {
+      const error = new Error('A posted reply cannot be changed');
+      error.status = 409;
+      throw error;
+    }
+    if (changes.discard === true) {
+      return this.db.updateReplyDraft(draftId, { status: 'discarded' });
+    }
+    if (typeof changes.editedText === 'string') {
+      const text = changes.editedText.trim().slice(0, 1000);
+      if (!text) {
+        const error = new Error('Reply text cannot be empty');
+        error.status = 400;
+        throw error;
+      }
+      return this.db.updateReplyDraft(draftId, { editedText: text, status: 'proposed', failureReason: null });
+    }
+    const error = new Error('Nothing to update');
+    error.status = 400;
+    throw error;
+  }
+
+  async approveReplyDraft(draftId, input = {}) {
+    if (input.confirmed !== true) {
+      const error = new Error('Confirm the reply text before posting to YouTube');
+      error.status = 409;
+      error.code = 'REPLY_APPROVAL_REQUIRED';
+      throw error;
+    }
+    let draft = await this.requireDraft(draftId);
+    if (draft.status === 'posted') {
+      const error = new Error('This reply was already posted');
+      error.status = 409;
+      throw error;
+    }
+    if (draft.status === 'discarded') {
+      const error = new Error('Edit the discarded draft to restore it before approval');
+      error.status = 409;
+      throw error;
+    }
+    const posting = this.postingEnabled();
+    if (!posting.enabled) {
+      const error = new Error('Posting requires re-authorizing YouTube with the comment permission. Run npm run walkthrough to re-connect.');
+      error.status = 409;
+      error.code = 'REPLY_SCOPE_REQUIRED';
+      throw error;
+    }
+    const since = new Date(Date.now() - 86400000).toISOString();
+    if (await this.db.countReplyDraftsPostedSince(since) >= this.dailyReplyCap) {
+      const error = new Error(`The daily reply cap (${this.dailyReplyCap}) was reached; try again tomorrow or raise ENGAGEMENT_DAILY_REPLY_CAP`);
+      error.status = 429;
+      throw error;
+    }
+    if (typeof input.editedText === 'string' && input.editedText.trim()) {
+      draft = await this.db.updateReplyDraft(draftId, { editedText: input.editedText.trim().slice(0, 1000) });
+    }
+    const text = (draft.editedText || draft.draftText || '').trim();
+    try {
+      const posted = await this.insertComment({ parentId: draft.commentId, text });
+      if (!posted?.id) throw new Error('YouTube did not return a comment id for the posted reply');
+      await this.db.markAudienceCommentReplied(draft.commentId);
+      return await this.db.updateReplyDraft(draftId, {
+        status: 'posted',
+        postedCommentId: posted.id,
+        postedAt: new Date().toISOString(),
+        failureReason: null
+      });
+    } catch (error) {
+      await this.db.updateReplyDraft(draftId, {
+        status: 'failed',
+        failureReason: String(error.message || 'Posting failed').slice(0, 300)
+      });
+      const wrapped = new Error(`The reply could not be posted: ${error.message}`);
+      wrapped.status = 502;
+      throw wrapped;
+    }
+  }
+
+  async getSummary() {
+    const [insights, pendingDrafts, pendingRecommendations] = await Promise.all([
+      this.db.listEngagementInsights({ limit: 12 }),
+      this.db.listReplyDrafts({ status: 'proposed', limit: 100 }),
+      this.db.listLearningRecommendations({ status: 'pending', limit: 100 })
+    ]);
+    const since = new Date(Date.now() - 86400000).toISOString();
+    const postedToday = await this.db.countReplyDraftsPostedSince(since);
+    const posting = this.postingEnabled();
+    return {
+      videosTracked: insights.length,
+      pendingDrafts: pendingDrafts.length,
+      postedToday,
+      needsAttentionCount: insights.reduce((sum, insight) => sum + (insight.attentionFlags?.length || 0), 0),
+      pendingAudienceIdeas: pendingRecommendations.filter(item => item.category === 'audience_demand').length,
+      postingEnabled: posting.enabled,
+      postingDisabledReason: posting.reason,
+      insights,
+      recentThemes: insights
+        .flatMap(insight => (insight.themes || []).slice(0, 3).map(theme => ({ ...theme, videoId: insight.videoId, videoTitle: insight.title })))
+        .slice(0, 8),
+      evidencePolicy: 'Comments are fetched read-only from YouTube. Replies post only after operator approval, and fallback analysis never proposes drafts or ideas.'
+    };
   }
 }
 

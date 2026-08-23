@@ -55,7 +55,8 @@ class SystemTest {
       { name: 'Audience Comment Sync', test: () => this.testAudienceCommentSync() },
       { name: 'Audience Comment Analysis', test: () => this.testAudienceCommentAnalysis() },
       { name: 'Audience Idea Mining', test: () => this.testAudienceIdeaMining() },
-      { name: 'Reply Drafting', test: () => this.testReplyDrafting() }
+      { name: 'Reply Drafting', test: () => this.testReplyDrafting() },
+      { name: 'Reply Approval and Posting', test: () => this.testReplyApprovalAndPosting() }
     ];
 
     let passed = 0;
@@ -2706,6 +2707,82 @@ class SystemTest {
       await db.executeQuery('DELETE FROM audience_comments WHERE video_id = ?', [videoId]);
       await db.executeQuery('DELETE FROM engagement_insights WHERE video_id LIKE ?', [`${videoId}%`]);
       await db.executeQuery('DELETE FROM reply_drafts WHERE video_id = ?', [videoId]);
+      await db.close();
+    }
+  }
+
+  async testReplyApprovalAndPosting() {
+    const db = new Database();
+    await db.initialize();
+    const videoId = `vid_post_${Date.now()}`;
+    const commentId = `${videoId}_target`;
+    const scopedCredentials = { hasYouTubeScope: scope => scope === 'https://www.googleapis.com/auth/youtube.force-ssl' };
+    try {
+      await db.upsertAudienceComment({ commentId, videoId, text: 'Question?', publishedAt: new Date().toISOString() });
+      const makeDraft = () => db.saveReplyDraft({ commentId, videoId, draftText: 'Answer text' });
+
+      let draft = await makeDraft();
+      const posts = [];
+      const service = new AudienceEngagementService(db, scopedCredentials, null, {
+        insertComment: async ({ parentId, text }) => { posts.push({ parentId, text }); return { id: 'yt_posted_1' }; }
+      });
+
+      let code = null;
+      try { await service.approveReplyDraft(draft.id, {}); } catch (error) { code = error.code; }
+      if (code !== 'REPLY_APPROVAL_REQUIRED') throw new Error('Approval must require confirmed: true');
+
+      const unscoped = new AudienceEngagementService(db, { hasYouTubeScope: () => false }, null, {});
+      code = null;
+      try { await unscoped.approveReplyDraft(draft.id, { confirmed: true }); } catch (error) { code = error.code; }
+      if (code !== 'REPLY_SCOPE_REQUIRED') throw new Error('Missing force-ssl scope must block posting');
+      const gate = unscoped.postingEnabled();
+      if (gate.enabled || gate.reason !== 'missing_scope') {
+        throw new Error('postingEnabled must report missing_scope');
+      }
+
+      const posted = await service.approveReplyDraft(draft.id, { confirmed: true, editedText: 'Edited answer' });
+      if (posted.status !== 'posted' || posted.postedCommentId !== 'yt_posted_1') throw new Error('Posting evidence missing');
+      if (posts[0].parentId !== commentId || posts[0].text !== 'Edited answer') throw new Error('The edited text must be what posts');
+      if (!(await db.getAudienceComment(commentId)).repliedByAgent) throw new Error('Source comment must be marked replied');
+
+      let status = null;
+      try { await service.approveReplyDraft(draft.id, { confirmed: true }); } catch (error) { status = error.status; }
+      if (status !== 409) throw new Error('A posted draft must not post twice');
+
+      // Failure path: failed + reason, manual retry allowed
+      const failingComment = `${videoId}_fail`;
+      await db.upsertAudienceComment({ commentId: failingComment, videoId, text: 'Other?', publishedAt: new Date().toISOString() });
+      const failDraft = await db.saveReplyDraft({ commentId: failingComment, videoId, draftText: 'Will fail' });
+      const failing = new AudienceEngagementService(db, scopedCredentials, null, {
+        insertComment: async () => { throw new Error('commentThreadNotFound'); }
+      });
+      status = null;
+      try { await failing.approveReplyDraft(failDraft.id, { confirmed: true }); } catch (error) { status = error.status; }
+      if (status !== 502) throw new Error('A failed post must throw 502');
+      const failed = await db.getReplyDraft(failDraft.id);
+      if (failed.status !== 'failed' || !failed.failureReason.includes('commentThreadNotFound')) throw new Error('Failure evidence missing');
+
+      // Daily cap
+      const capped = new AudienceEngagementService(db, scopedCredentials, null, { dailyReplyCap: 1, insertComment: async () => ({ id: 'x' }) });
+      status = null;
+      try { await capped.approveReplyDraft(failDraft.id, { confirmed: true }); } catch (error) { status = error.status; }
+      if (status !== 429) throw new Error('The daily reply cap must block further posts');
+
+      // updateReplyDraft rules
+      const edited = await service.updateReplyDraft(failDraft.id, { editedText: 'Retry text' });
+      if (edited.status !== 'proposed' || edited.editedText !== 'Retry text') throw new Error('Editing must re-open a failed draft');
+      const discarded = await service.updateReplyDraft(failDraft.id, { discard: true });
+      if (discarded.status !== 'discarded') throw new Error('Discard failed');
+
+      // Summary
+      const summary = await service.getSummary();
+      if (summary.postedToday < 1) throw new Error('getSummary missed postedToday');
+      if (summary.postingEnabled !== true) throw new Error('getSummary posting flag is wrong');
+      if (!summary.evidencePolicy.includes('operator approval')) throw new Error('evidencePolicy text missing');
+    } finally {
+      await db.executeQuery('DELETE FROM audience_comments WHERE video_id = ?', [videoId]);
+      await db.executeQuery('DELETE FROM reply_drafts WHERE video_id = ?', [videoId]);
+      await db.executeQuery('DELETE FROM engagement_insights WHERE video_id = ?', [videoId]);
       await db.close();
     }
   }
