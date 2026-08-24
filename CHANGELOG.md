@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v2.10.0 — 2026-08-24
+
+- Added a versioned DarkzSEO discoverability preflight over a shell-free Python stdin/stdout adapter, with explicit unavailable and schema-mismatch states
+- Added durable discoverability audits and findings, reviewer keep/dismiss decisions with required false-positive reasons, and review evidence carry-forward across matching audits
+- Added an advisory Review Studio panel and API controls; discoverability findings never rewrite content or block publication in this release
 - Added a Controlled Growth Experiments Studio that turns approved-learning title and thumbnail variants into durable post-publication test plans
 - Added separate plan approval, live-start confirmation, bounded arm rotation, control restoration, and winner-adoption gates; no experiment can silently adopt a live change
 - Added real YouTube evidence samples for each arm using interval deltas for impressions, estimated clicks, CTR, views, watch time, retention, engagement, subscribers, and revenue
@@ -13,6 +18,7 @@
 - Added an Outcome & ROI Studio dashboard with target progress, evidence coverage, channel economics, and pillar, format, and provider comparisons
 - Added approval-gated outcome-allocation recommendations; pending or rejected recommendations cannot change autonomous planning
 - Added `GET /api/outcomes`, structured strategy validation, content-pillar propagation, database migrations, and regression coverage for goal alignment and non-monetized channels
+- Established a platform-targeted audit contract for future TikTok and Instagram/Reels publishing and analytics adapters; those adapters are not included in v2.10.0
 
 ## v2.9.0 — 2026-08-23
 

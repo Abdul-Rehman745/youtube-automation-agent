@@ -644,6 +644,25 @@ label:has(input:disabled) > span { color: var(--muted); }
 .provenance-list { display: grid; gap: 10px; }
 .provenance-item { display: grid; gap: 11px; border: 1px solid var(--line); background: rgba(8, 11, 16, .44); border-radius: var(--radius-sm); padding: 12px; }
 .provenance-item.high-risk { border-color: rgba(255, 194, 71, .4); }
+.discoverability-panel { display: grid; gap: 14px; border: 1px solid rgba(77, 166, 255, .28); background: rgba(77, 166, 255, .045); border-radius: var(--radius); padding: 14px; }
+.discoverability-heading { align-items: flex-start; margin: 0; }
+.discoverability-heading h3 { font-size: 16px; margin: 2px 0 0; }
+.discoverability-heading p:not(.eyebrow) { color: var(--muted); font-size: 12px; line-height: 1.45; margin: 6px 0 0; max-width: 680px; }
+.discoverability-actions, .discoverability-finding-heading, .discoverability-review-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.discoverability-actions { justify-content: flex-end; }
+.discoverability-findings { display: grid; gap: 10px; }
+.discoverability-finding { display: grid; gap: 8px; border: 1px solid var(--line); border-left-width: 3px; background: rgba(8, 11, 16, .44); border-radius: var(--radius-sm); padding: 12px; }
+.discoverability-finding.severity-critical, .discoverability-finding.severity-high { border-left-color: var(--red-hot); }
+.discoverability-finding.severity-medium { border-left-color: var(--amber); }
+.discoverability-finding.severity-low, .discoverability-finding.severity-info { border-left-color: var(--blue); }
+.discoverability-finding p, .discoverability-finding small { margin: 0; }
+.discoverability-finding p { color: var(--text); font-size: 13px; }
+.discoverability-finding small { color: var(--muted); line-height: 1.45; }
+.severity-badge, .review-state { border-radius: 999px; padding: 4px 8px; font: 9px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; }
+.severity-badge { color: var(--amber); background: var(--amber-soft); }
+.review-state { color: var(--muted); background: var(--surface-inset); }
+.review-state.accepted { color: var(--amber); }
+.review-state.dismissed { color: var(--green); }
 .provenance-item-heading strong { font-size: 12px; }
 
 /* ============ Callouts ============ */

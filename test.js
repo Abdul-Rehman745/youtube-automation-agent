@@ -36,6 +36,7 @@ class SystemTest {
       { name: 'Narration Reliability and Recovery', test: () => this.testNarrationReliability() },
       { name: 'Shorts Repurposing Studio', test: () => this.testShortsRepurposingStudio() },
       { name: 'Research and Provenance Desk', test: () => this.testProvenanceDesk() },
+      { name: 'DarkzSEO Discoverability Preflight', test: () => this.testDiscoverabilityPreflight() },
       { name: 'Resumable Generation Checkpoints', test: () => this.testResumableGenerationCheckpoints() },
       { name: 'API Validation and Security', test: () => this.testAPIValidationAndSecurity() },
       { name: 'Publishing Safety', test: () => this.testPublishingSafety() },
@@ -1708,6 +1709,129 @@ class SystemTest {
     this.logger.info('Research and provenance desk test completed successfully');
   }
 
+  async testDiscoverabilityPreflight() {
+    const fs = require('fs').promises;
+    const os = require('os');
+    const { DiscoverabilityService } = require('./utils/discoverability-service');
+    const { OperatorService } = require('./utils/operator-service');
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'yaa-discoverability-'));
+    const db = new Database();
+    db.dbPath = path.join(directory, 'discoverability.db');
+    await db.initialize();
+    const productionId = 'prod-discoverability-test';
+    const fakeAdapter = {
+      audit: async content => ({
+        schemaVersion: '1.0',
+        engine: { name: 'darkzseo', version: '1.4.0' },
+        mode: 'content',
+        target: content.id,
+        status: 'attention_required',
+        summary: {
+          severity: { CRITICAL: 0, HIGH: 1, MEDIUM: 0, LOW: 0, INFO: 0 },
+          category: { SEO: 0, GEO: 1, AIO: 0, AEO: 0 }
+        },
+        findings: [{
+          ruleId: 'geo.trust_network', category: 'GEO', severity: 'HIGH',
+          applicability: ['youtube', 'content'],
+          message: 'Trust Network: Long content lacks authority links',
+          remediation: 'Add a verified authority source.'
+        }]
+      })
+    };
+
+    try {
+      await db.saveProductionData({
+        id: productionId, status: 'needs_review', assets: {}, timeline: {},
+        scheduledPublishTime: null, priority: 50, estimatedDuration: '1:00'
+      });
+      const production = {
+        id: productionId,
+        script: { title: 'AgentTube discoverability', fullScript: 'Detailed content '.repeat(200), sections: [] },
+        seo: { title: 'AgentTube discoverability', description: 'A detailed discoverability review.', chapters: [] },
+        provenance: { sources: [] }
+      };
+      await db.saveProductionSnapshot(production);
+      const service = new DiscoverabilityService(db, { adapter: fakeAdapter });
+      const first = await service.auditProduction(production, { channel_name: 'AgentTube' });
+      if (first.engineVersion !== '1.4.0' || first.findings.length !== 1 || first.pendingCount !== 1) {
+        throw new Error('The versioned DarkzSEO report was not persisted');
+      }
+
+      const quality = await new OperatorService(db).runQualityChecks({ ...production, discoverability: first }, {});
+      const discoverabilityCheck = quality.checks.find(check => check.id === 'discoverability');
+      if (!discoverabilityCheck || discoverabilityCheck.passed || discoverabilityCheck.blocking) {
+        throw new Error('High-priority discoverability guidance was not advisory and visible');
+      }
+
+      let shortReasonRejected = false;
+      try {
+        await service.reviewFinding(first.findings[0].id, { status: 'dismissed', reason: 'no' });
+      } catch (error) {
+        shortReasonRejected = /at least 5/.test(error.message);
+      }
+      if (!shortReasonRejected) throw new Error('A false-positive dismissal without reviewer evidence was accepted');
+
+      await service.reviewFinding(first.findings[0].id, { status: 'dismissed', reason: 'The cited source is attached in the approved evidence desk.' });
+      const second = await service.auditProduction(production, { channel_name: 'AgentTube' });
+      if (second.findings[0].reviewStatus !== 'dismissed' || second.pendingCount !== 0) {
+        throw new Error('Finding review evidence did not carry forward across matching audits');
+      }
+      const reviewedQuality = await new OperatorService(db).runQualityChecks({ ...production, discoverability: second }, {});
+      if (!reviewedQuality.checks.find(check => check.id === 'discoverability' && check.passed)) {
+        throw new Error('A dismissed false positive remained an actionable quality warning');
+      }
+
+      const { YouTubeAutomationAgent } = require('./index');
+      const apiAgent = new YouTubeAutomationAgent();
+      apiAgent.db = db;
+      apiAgent.operator = new OperatorService(db);
+      apiAgent.discoverability = service;
+      apiAgent.setupAPI();
+      const server = await new Promise(resolve => {
+        const listener = apiAgent.app.listen(0, '127.0.0.1', () => resolve(listener));
+      });
+      try {
+        const address = server.address();
+        const apiHeaders = { 'content-type': 'application/json', ...(process.env.API_KEY ? { 'x-api-key': process.env.API_KEY } : {}) };
+        const runResponse = await fetch(`http://127.0.0.1:${address.port}/api/content/${productionId}/discoverability/run`, {
+          method: 'POST', headers: apiHeaders, body: JSON.stringify({ platform: 'youtube' })
+        });
+        const runPayload = await runResponse.json();
+        if (!runResponse.ok || runPayload.audit?.schemaVersion !== '1.0' || !runPayload.result?.discoverability) {
+          throw new Error('Discoverability run API did not return the persisted versioned audit');
+        }
+        const apiFinding = runPayload.audit.findings[0];
+        const reviewResponse = await fetch(`http://127.0.0.1:${address.port}/api/discoverability/findings/${apiFinding.id}`, {
+          method: 'PATCH', headers: apiHeaders, body: JSON.stringify({ status: 'accepted' })
+        });
+        const reviewPayload = await reviewResponse.json();
+        if (!reviewResponse.ok || reviewPayload.result?.finding?.reviewStatus !== 'accepted') {
+          throw new Error('Discoverability review API did not persist the operator decision');
+        }
+      } finally {
+        await new Promise(resolve => server.close(resolve));
+      }
+
+      const unavailableService = new DiscoverabilityService(db, {
+        adapter: { audit: async () => { const error = new Error('Python is not installed'); error.code = 'DARKZSEO_UNAVAILABLE'; throw error; } }
+      });
+      const unavailable = await unavailableService.auditProduction(production, { channel_name: 'AgentTube' });
+      if (unavailable.status !== 'unavailable' || unavailable.errorCode !== 'DARKZSEO_UNAVAILABLE' || unavailable.findings.length !== 0) {
+        throw new Error('An unavailable DarkzSEO runtime was not stored explicitly');
+      }
+      const unavailableQuality = await new OperatorService(db).runQualityChecks({ ...production, discoverability: unavailable }, {});
+      const unavailableCheck = unavailableQuality.checks.find(check => check.id === 'discoverability');
+      if (!unavailableCheck || unavailableCheck.passed || unavailableCheck.blocking) {
+        throw new Error('DarkzSEO runtime availability did not remain an explicit non-blocking check');
+      }
+    } finally {
+      await db.close();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+
+    this.logger.info('DarkzSEO discoverability preflight test completed successfully');
+  }
+
   async testResumableGenerationCheckpoints() {
     const fs = require('fs').promises;
     const os = require('os');
@@ -2511,7 +2635,9 @@ class SystemTest {
       './agents/seo-optimizer-agent',
       './agents/production-management-agent',
       './agents/publishing-scheduling-agent',
-      './agents/analytics-optimization-agent'
+      './agents/analytics-optimization-agent',
+      './utils/discoverability-service',
+      './utils/discoverability-adapters/darkzseo'
     ];
 
     for (const agentFile of agentFiles) {

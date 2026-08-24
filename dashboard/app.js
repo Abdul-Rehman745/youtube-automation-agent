@@ -860,6 +860,30 @@ function renderProvenanceEditor(provenance = {}, canReview = true) {
   </section>`;
 }
 
+function renderDiscoverabilityPanel(item) {
+  const audit = item.discoverability;
+  const findings = audit?.findings || [];
+  const state = !audit ? 'Not run' : audit.status === 'unavailable' ? 'Unavailable' : `${findings.length} finding${findings.length === 1 ? '' : 's'}`;
+  const stateClass = audit?.status === 'passed' || (audit && findings.length === 0) ? 'success' : 'warning';
+  return `<section class="discoverability-panel">
+    <div class="panel-heading discoverability-heading">
+      <div><p class="eyebrow">DISCOVERABILITY PREFLIGHT</p><h3>DarkzSEO review</h3><p>Review GEO, AIO, AEO, and web-search guidance against this content package. Findings are advisory and never rewrite or publish content.</p></div>
+      <div class="discoverability-actions"><span class="status ${stateClass}">${escapeHTML(state)}</span><button type="button" class="button secondary small" data-discoverability-run="${escapeHTML(item.id)}">${audit ? 'Run again' : 'Run audit'}</button></div>
+    </div>
+    ${audit?.error ? `<p class="callout">DarkzSEO could not run${audit.errorCode || audit.error_code ? ` (${escapeHTML(audit.errorCode || audit.error_code)})` : ''}: ${escapeHTML(audit.error)}</p>` : ''}
+    ${findings.length ? `<div class="discoverability-findings">${findings.map(finding => {
+      const reviewStatus = finding.reviewStatus || finding.review_status || 'pending';
+      return `<article class="discoverability-finding severity-${escapeHTML(String(finding.severity || 'info').toLowerCase())}" data-discoverability-finding="${escapeHTML(finding.id)}">
+        <div class="discoverability-finding-heading"><span class="severity-badge">${escapeHTML(finding.severity)}</span><strong>${escapeHTML(finding.ruleId || finding.rule_id)}</strong><span class="review-state ${escapeHTML(reviewStatus)}">${escapeHTML(label(reviewStatus))}</span></div>
+        <p>${escapeHTML(finding.message)}</p>
+        ${finding.remediation ? `<small>${escapeHTML(finding.remediation)}</small>` : ''}
+        ${finding.reviewReason || finding.review_reason ? `<small>Reviewer note: ${escapeHTML(finding.reviewReason || finding.review_reason)}</small>` : ''}
+        <div class="discoverability-review-actions"><button type="button" class="text-button approve" data-discoverability-accept ${reviewStatus === 'accepted' ? 'disabled' : ''}>Keep as actionable</button><button type="button" class="text-button" data-discoverability-dismiss ${reviewStatus === 'dismissed' ? 'disabled' : ''}>Dismiss false positive</button></div>
+      </article>`;
+    }).join('')}</div>` : audit && audit.status !== 'unavailable' ? '<p class="empty-inline">No discoverability findings. The content package passed the configured advisory checks.</p>' : '<p class="empty-inline">Run DarkzSEO to create a versioned, reviewable audit for this production.</p>'}
+  </section>`;
+}
+
 function renderSceneEditor(item, canReview = true) {
   const scenes = item.scenes || [];
   if (!scenes.length) return '';
@@ -997,6 +1021,7 @@ async function openContent(productionId) {
         </div>
         ${renderSceneEditor(item, canReview)}
         ${renderShortsStudio(item)}
+        ${renderDiscoverabilityPanel(item)}
         ${renderProvenanceEditor(item.provenance, canReview)}
           <div class="form-grid two">
             <label><span>Publish time</span><input name="publishTime" type="datetime-local" value="${toLocalInput(publishTime)}"></label>
@@ -1310,6 +1335,41 @@ document.addEventListener('click', async event => {
         method: 'POST', body: JSON.stringify({ count: 3, replace: replacing })
       });
       await refreshContentDialog(productionId, 'Three local Short drafts created from the current scene timeline.');
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+    return;
+  }
+
+  const discoverabilityRun = event.target.closest('[data-discoverability-run]');
+  if (discoverabilityRun) {
+    const productionId = discoverabilityRun.dataset.discoverabilityRun;
+    try {
+      await api(`/api/content/${encodeURIComponent(productionId)}/discoverability/run`, {
+        method: 'POST', body: JSON.stringify({ platform: 'youtube' })
+      });
+      await refreshContentDialog(productionId, 'Discoverability preflight refreshed. Findings remain advisory until reviewed.');
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+    return;
+  }
+
+  const discoverabilityReview = event.target.closest('[data-discoverability-accept], [data-discoverability-dismiss]');
+  if (discoverabilityReview) {
+    const card = discoverabilityReview.closest('[data-discoverability-finding]');
+    const productionId = $('#content-review-form')?.dataset.productionId;
+    if (!card || !productionId) return;
+    const status = discoverabilityReview.matches('[data-discoverability-dismiss]') ? 'dismissed' : 'accepted';
+    const reason = status === 'dismissed'
+      ? (prompt('Why is this finding a false positive? The reason will be retained on future matching audits.') || '')
+      : '';
+    if (status === 'dismissed' && !reason) return;
+    try {
+      await api(`/api/discoverability/findings/${encodeURIComponent(card.dataset.discoverabilityFinding)}`, {
+        method: 'PATCH', body: JSON.stringify({ status, reason })
+      });
+      await refreshContentDialog(productionId, status === 'dismissed' ? 'Finding dismissed with reviewer evidence.' : 'Finding kept as an actionable recommendation.');
     } catch (error) {
       showToast(error.message, 'error');
     }

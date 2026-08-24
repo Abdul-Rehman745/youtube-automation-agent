@@ -99,6 +99,24 @@ class OperatorService {
           ? 'No externally verifiable factual claims were declared'
           : `${unresolved} factual claim${unresolved === 1 ? '' : 's'} still require evidence review`));
 
+    const discoverability = production.discoverability;
+    if (discoverability) {
+      const actionable = (discoverability.findings || []).filter(finding =>
+        ['CRITICAL', 'HIGH'].includes(finding.severity) && finding.reviewStatus !== 'dismissed'
+      );
+      const available = discoverability.status !== 'unavailable';
+      checks.push(this.check(
+        'discoverability',
+        available && actionable.length === 0,
+        !available
+          ? `DarkzSEO advisory audit is unavailable${discoverability.error ? `: ${discoverability.error}` : ''}`
+          : actionable.length
+            ? `${actionable.length} high-priority discoverability finding${actionable.length === 1 ? '' : 's'} await remediation or dismissal`
+            : `${discoverability.findings?.length || 0} discoverability finding${discoverability.findings?.length === 1 ? '' : 's'} recorded; no unresolved high-priority findings`,
+        false
+      ));
+    }
+
     if (scenes.length) {
       const invalidScenes = scenes.filter(scene =>
         !scene.assetPath || ['missing_asset', 'failed', 'generating', 'needs_rebuild', 'visual_stale'].includes(scene.status) ||

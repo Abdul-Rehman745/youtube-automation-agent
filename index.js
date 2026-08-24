@@ -26,6 +26,7 @@ const { ShortsRepurposingService } = require('./utils/shorts-repurposing-service
 const { AudienceEngagementService } = require('./utils/audience-engagement-service');
 const { GrowthExperimentService } = require('./utils/growth-experiment-service');
 const { AITextService } = require('./utils/ai-text-service');
+const { DiscoverabilityService } = require('./utils/discoverability-service');
 const { version } = require('./package.json');
 const chalk = require('chalk');
 
@@ -49,6 +50,7 @@ class YouTubeAutomationAgent {
     this.shorts = null;
     this.engagement = null;
     this.experiments = null;
+    this.discoverability = null;
     this.setupRequired = false;
   }
 
@@ -68,6 +70,7 @@ class YouTubeAutomationAgent {
       });
       this.operator = new OperatorService(this.db);
       this.provenance = new ProvenanceService(this.db);
+      this.discoverability = new DiscoverabilityService(this.db, { logger: this.logger });
       this.autonomous = new AutonomousChannelOperator(this.db, {
         researchAndPlan: strategy => {
           if (!this.agents.strategy) throw new Error('The strategy agent is not configured');
@@ -958,6 +961,43 @@ class YouTubeAutomationAgent {
       return res.json({ success: true, result: recommendation });
     });
 
+    this.app.post('/api/content/:productionId/discoverability/run', protect, async (req, res) => {
+      try {
+        const bundle = await this.db.getProductionBundle(req.params.productionId);
+        if (!bundle) return res.status(404).json({ success: false, error: 'Content not found' });
+        const profile = await this.db.getChannelProfile() || {};
+        const audit = await this.discoverability.auditProduction(bundle, profile, req.body?.platform || 'youtube');
+        if (bundle.review_status !== 'approved' && !bundle.schedule) {
+          const updated = await this.db.getProductionBundle(bundle.id);
+          const quality = await this.operator.runQualityChecks({
+            ...updated,
+            scheduledPublishTime: updated.scheduled_publish_time
+          }, profile);
+          await this.db.saveContentReview(bundle.id, {
+            status: quality.passed ? 'needs_review' : 'needs_attention',
+            editorData: updated.editorData,
+            qualityChecks: quality.checks,
+            reviewNotes: quality.passed ? null : `Blocking checks failed: ${quality.blockingFailures.join(', ')}`,
+            reviewedAt: null
+          });
+        }
+        const result = await this.db.getProductionBundle(bundle.id);
+        return res.json({ success: true, result: this.decorateContentBundle(result), audit });
+      } catch (error) {
+        return res.status(error.status || 400).json({ success: false, error: error.message });
+      }
+    });
+
+    this.app.patch('/api/discoverability/findings/:findingId', protect, async (req, res) => {
+      try {
+        const finding = await this.discoverability.reviewFinding(req.params.findingId, req.body || {});
+        const audit = await this.db.getLatestDiscoverabilityAudit(finding.production_id, finding.platform);
+        return res.json({ success: true, result: { finding, audit } });
+      } catch (error) {
+        return res.status(error.status || 400).json({ success: false, error: error.message });
+      }
+    });
+
     this.app.get('/api/experiments', async (_req, res) => {
       try {
         const summary = this.experiments
@@ -1440,6 +1480,9 @@ class YouTubeAutomationAgent {
     await this.db.saveProductionSnapshot(productionData);
     if (!this.provenance) this.provenance = new ProvenanceService(this.db);
     productionData.provenance = await this.provenance.initialize(contentId, productionData);
+    productionData.discoverability = this.discoverability
+      ? await this.discoverability.auditProduction(productionData, profile, 'youtube')
+      : null;
     this.logger.info(`Content saved with ID: ${contentId}`);
 
     // Step 6: Quality and approval gate

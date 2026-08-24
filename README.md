@@ -12,23 +12,20 @@ Research topics → write scripts → generate narration and visuals → assembl
 
 ## What's new on master
 
-- **Controlled Growth Experiments Studio:** turn an approved packaging recommendation into a durable control and variant test, rotate only the explicitly approved arms, measure real interval evidence, restore the control, and separately approve an evidence-backed winner.
-- **Outcome & ROI Studio:** align the operator with a measurable KPI, target window, and budget while keeping missing revenue and cost evidence explicit.
+- **v2.10.0 is now on master:** DarkzSEO discoverability audits, controlled growth experiments, and outcome-aware channel operation are available together in the approval-first workflow.
 
-## What's new in v2.9.0
+## What's new in v2.10.0
 
-**The agent now listens to your audience.** Until this release the feedback loop was numbers only — click-through, retention, watch time. It said how people watched, never what they wanted. v2.9.0 closes that gap and rounds out the repairable, provider-flexible, multi-format production workflow:
+**AgentTube now has a discoverability adapter layer.** v2.10.0 connects the production pipeline to DarkzSEO without merging the projects or weakening human review, then adds the evidence needed to prove what packaging and strategy actually work:
 
-- **Audience Engagement Studio (new):** sync real YouTube comments on a tapered schedule, review AI-clustered themes and sentiment, and approve or edit every drafted reply before a single one posts. Likely spam, scams, and toxicity are quarantined for you to see, never acted on automatically.
-- **Your audience writes the roadmap (new):** when three or more commenters ask for the same thing, that becomes a content recommendation carrying the comment permalinks as evidence. Approve it and the Autonomous Channel Operator plans the video that answers it.
-- **Scene-aware retention:** collect YouTube's real 100-point audience-retention curve, map it to the durable production timeline, and review scene-specific drop-off, rewatch, and strong-hold evidence before it can guide future work.
-- **Shorts Repurposing Studio:** turn an approved production into three source-scene-backed 9:16 drafts, choose blurred, cropped, or stacked layouts, render mobile captions locally, and approve each Short on its own schedule.
-- **Scene-level repair:** edit, reorder, lock, replace, or regenerate one scene, then rebuild the final MP4 without discarding the rest of the production.
-- **Narration reliability:** missing, stale, simulated, or failed TTS now blocks assembly, approval, scheduling, and publishing; narration-only recovery and reasoned intentional silence are explicit operator actions.
-- **Multi-provider AI video:** route bounded clips across Seedance, MiniMax H3, Gemini Omni Flash, Kling, and Wan with durable external task IDs, paid-seconds caps, hybrid local assembly, and slideshow fallback.
-- **Research and provenance:** retain exact sources, connect factual claims to reviewer-verified evidence, and carry realistic synthetic-media disclosure into YouTube metadata.
+- **DarkzSEO Discoverability Preflight:** send a canonical content package—not the private dashboard—through versioned GEO, AIO, AEO, and web-search checks after metadata and provenance are assembled.
+- **Reviewable evidence:** persist stable rule IDs, severity, engine/schema identity, fingerprints, and operator decisions in SQLite. Keep a finding actionable or dismiss a false positive with a reason that carries into matching future audits.
+- **Safe local adapter boundary:** invoke DarkzSEO through JSON-only stdin/stdout without a shell or inherited API secrets. Missing Python, timeouts, and schema drift stay explicit and non-blocking.
+- **Controlled Growth Experiments Studio:** rotate only approved title/thumbnail arms, measure real interval evidence, restore the control, and require a separate decision before adopting a winner.
+- **Outcome & ROI Studio:** align the operator with a measurable KPI, target window, budget, and available revenue/cost evidence without converting missing economics into false zeroes.
+- **Platform-ready foundation:** audits already retain their target platform, providing the durable contract for planned TikTok and Instagram/Reels publishing and analytics adapters.
 
-Upgrading from an earlier version? Comment posting needs one YouTube re-authorization to grant the comment permission — until then the studio still syncs, analyzes, and drafts in read-and-draft mode. Run `npm run walkthrough` to re-connect.
+DarkzSEO is optional. Install DarkzSEO 1.4+ into Python or set `DARKZSEO_PATH`; when it is unavailable, AgentTube records the reason and keeps the existing approval workflow operational.
 
 See the complete release history in [CHANGELOG.md](CHANGELOG.md).
 
@@ -98,12 +95,27 @@ A claim can be approved only when it links to a verified source. Unsupported cla
 
 Use the altered or synthetic media control only when the video contains realistic content that requires YouTube disclosure. The selected value is preserved in the publishing queue and included in the YouTube upload request.
 
+### Review discoverability guidance
+
+Every saved production receives an optional **DarkzSEO Discoverability Preflight** in Review Studio after metadata and provenance are assembled. The adapter sends a canonical content package—not the private dashboard—to DarkzSEO's versioned JSON API and stores the engine version, schema version, severity summary, stable rule IDs, and individual findings in SQLite.
+
+Findings are advisory in this release. Keep a useful recommendation as actionable, or dismiss a false positive with a reviewer reason that carries forward to matching findings on later audits. Missing Python, an unavailable DarkzSEO installation, timeouts, and schema mismatches remain explicit without blocking publication or silently changing scripts and metadata.
+
+For local development with a sibling checkout:
+
+```bash
+python -m pip install -e ../darkzseo
+```
+
+Alternatively set `DARKZSEO_PATH` to `darkzseo.py`. The adapter uses a shell-free Python child process, sends content JSON over stdin, and reads JSON-only stdout. DarkzSEO 1.4 or newer is required.
+
 ### What you need
 
 - Node.js 18+
 - A Google account and YouTube Data API credentials
 - At least one AI text provider key
 - FFmpeg, installed automatically through `ffmpeg-static`
+- Python 3.9+ and DarkzSEO 1.4+ for the optional discoverability preflight
 
 Gemini offers free access for supported text and TTS usage. Gemini AI image generation currently requires paid-tier access; without an image provider, Lumen can assemble gradient-based visuals instead.
 
@@ -179,7 +191,8 @@ graph TD
     C --> E[SEO Optimizer Agent]
     D --> F[Production Management Agent]
     E --> F
-    F --> G[Review and Approval Gates]
+    F --> Z[DarkzSEO Discoverability Preflight]
+    Z --> G[Review and Approval Gates]
     G --> H[Publishing & Scheduling Agent]
     H --> I[Analytics & Optimization Agent]
     I -->|feedback loop| A
@@ -196,6 +209,7 @@ Each agent handles one stage of the pipeline:
 | **Thumbnail Designer** | Creates thumbnails, runs A/B variations |
 | **SEO Optimizer** | Keywords, titles, descriptions, tags |
 | **Production** | Coordinates TTS audio, image assets, video assembly |
+| **Discoverability** | Runs versioned, advisory GEO/AIO/AEO content audits through DarkzSEO |
 | **Publishing** | Uploads, schedules, manages playlists |
 | **Analytics** | Tracks performance, feeds insights back to strategy |
 
