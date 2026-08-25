@@ -2,8 +2,8 @@ const OpenAI = require('openai');
 const Replicate = require('replicate');
 const fs = require('fs').promises;
 const path = require('path');
-const { pathToFileURL } = require('url');
 const axios = require('axios');
+const sharp = require('sharp');
 const { Logger } = require('./logger');
 const { runFFmpeg, checkFFmpeg, ffmpegInstallHint } = require('./ffmpeg');
 const { MediaGenerationService } = require('./media-generation-service');
@@ -254,16 +254,41 @@ class AIVideoGenerator {
 
     const response = await this.gemini.models.generateContent({
       model,
-      contents: prompt
+      contents: prompt,
+      config: {
+        responseModalities: ['IMAGE'],
+        imageConfig: {
+          aspectRatio: '16:9',
+          imageSize: '1K'
+        }
+      }
     });
 
     const parts = response.candidates?.[0]?.content?.parts || [];
-    const imagePart = parts.find(part => part.inlineData?.data);
+    const imageParts = parts.filter(part =>
+      part.inlineData?.data && (!part.inlineData.mimeType || part.inlineData.mimeType.startsWith('image/'))
+    );
+    const renderedImages = imageParts.filter(part => part.thought !== true);
+    const imagePart = (renderedImages.length ? renderedImages : imageParts).at(-1);
     if (!imagePart) {
       throw new Error('Gemini image generation returned no image data');
     }
 
-    await fs.writeFile(imagePath, Buffer.from(imagePart.inlineData.data, 'base64'));
+    const imageBuffer = Buffer.from(imagePart.inlineData.data, 'base64');
+    const metadata = await sharp(imageBuffer, { failOn: 'error' }).metadata();
+    if (!metadata.width || !metadata.height) {
+      throw new Error('Gemini image generation returned an invalid image asset');
+    }
+
+    const extension = path.extname(imagePath).toLowerCase();
+    const output = sharp(imageBuffer, { failOn: 'error' });
+    if (extension === '.jpg' || extension === '.jpeg') {
+      await output.jpeg({ quality: 92 }).toFile(imagePath);
+    } else if (extension === '.webp') {
+      await output.webp({ quality: 92 }).toFile(imagePath);
+    } else {
+      await output.png().toFile(imagePath);
+    }
     return imagePath;
   }
 
@@ -539,6 +564,11 @@ class AIVideoGenerator {
 
   async filterImageAssets(visualAssets = []) {
     const imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.webp']);
+    const mimeTypes = {
+      jpeg: 'image/jpeg',
+      png: 'image/png',
+      webp: 'image/webp'
+    };
     const images = [];
 
     for (const asset of visualAssets) {
@@ -547,10 +577,14 @@ class AIVideoGenerator {
       }
 
       try {
-        await fs.access(asset);
-        images.push(pathToFileURL(asset).href);
-      } catch (error) {
-        // Skip missing files
+        const imageBuffer = await fs.readFile(asset);
+        const metadata = await sharp(imageBuffer, { failOn: 'error' }).metadata();
+        const mimeType = mimeTypes[metadata.format];
+        if (mimeType && metadata.width && metadata.height) {
+          images.push(`data:${mimeType};base64,${imageBuffer.toString('base64')}`);
+        }
+      } catch (_error) {
+        // Skip missing or invalid image files
       }
     }
 
@@ -860,10 +894,11 @@ class AIVideoGenerator {
       const thumbnailPath = path.join(__dirname, '..', 'uploads', 'thumbnails', `thumbnail_${Date.now()}.png`);
 
       await this.generateImage(prompt, thumbnailPath);
+      const metadata = await sharp(thumbnailPath).metadata();
 
       return {
         path: thumbnailPath,
-        dimensions: { width: 1536, height: 1024 },
+        dimensions: { width: metadata.width, height: metadata.height },
         fileSize: await this.getFileSize(thumbnailPath)
       };
     } catch (error) {

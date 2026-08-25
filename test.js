@@ -2383,9 +2383,13 @@ class SystemTest {
 
   async testGeminiMediaProvider() {
     const { AIVideoGenerator } = require('./utils/ai-video-generator');
+    const fs = require('fs').promises;
+    const os = require('os');
+    const sharp = require('sharp');
 
     const envKeys = ['OPENAI_API_KEY', 'GEMINI_API_KEY', 'REPLICATE_API_KEY', 'ELEVENLABS_API_KEY'];
     const savedEnv = {};
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'yaa-gemini-image-'));
     for (const key of envKeys) {
       savedEnv[key] = process.env[key];
       delete process.env[key];
@@ -2400,6 +2404,41 @@ class SystemTest {
         throw new Error('OpenAI client initialized without a key');
       }
 
+      const thoughtImage = await sharp({
+        create: { width: 64, height: 64, channels: 3, background: '#ff0000' }
+      }).jpeg().toBuffer();
+      const finalImage = await sharp({
+        create: { width: 320, height: 180, channels: 3, background: '#0066ff' }
+      }).webp().toBuffer();
+      let imageRequest = null;
+      geminiOnly.gemini.models.generateContent = async request => {
+        imageRequest = request;
+        return {
+          candidates: [{
+            content: {
+              parts: [
+                { thought: true, inlineData: { mimeType: 'image/jpeg', data: thoughtImage.toString('base64') } },
+                { text: 'Rendering the final image.' },
+                { inlineData: { mimeType: 'image/webp', data: finalImage.toString('base64') } }
+              ]
+            }
+          }]
+        };
+      };
+
+      const outputPath = path.join(directory, 'gemini-output.png');
+      await geminiOnly.generateGeminiImage('Create a blue widescreen test image', outputPath);
+      const metadata = await sharp(outputPath).metadata();
+      if (metadata.format !== 'png' || metadata.width !== 320 || metadata.height !== 180) {
+        throw new Error('Gemini final image was not selected and normalized to the requested file format');
+      }
+      if (
+        imageRequest?.config?.responseModalities?.[0] !== 'IMAGE' ||
+        imageRequest?.config?.imageConfig?.aspectRatio !== '16:9'
+      ) {
+        throw new Error('Gemini image request did not require a widescreen image response');
+      }
+
       const none = new AIVideoGenerator({});
       if (none.gemini || none.openai) {
         throw new Error('Media services initialized without any credentials');
@@ -2412,6 +2451,7 @@ class SystemTest {
           process.env[key] = savedEnv[key];
         }
       }
+      await fs.rm(directory, { recursive: true, force: true }).catch(() => {});
     }
 
     this.logger.info('Gemini media provider selection test completed successfully');
@@ -2445,6 +2485,28 @@ class SystemTest {
       if (generator.parseDurationSeconds('2:05') !== 125 || generator.parseDurationSeconds('1:02:03') !== 3723) {
         throw new Error('Human-readable production durations are not converted to timeline seconds');
       }
+
+      const embeddedAssets = await generator.filterImageAssets(stills);
+      if (embeddedAssets.length !== stills.length || embeddedAssets.some(asset => !asset.startsWith('data:image/png;base64,'))) {
+        throw new Error('Slideshow image assets were not embedded as browser-safe image data');
+      }
+      const { chromium } = require('playwright');
+      const browser = await chromium.launch();
+      try {
+        const page = await browser.newPage();
+        await page.setContent(generator.createSlideshowHTML({ title: 'Image loading test' }, embeddedAssets));
+        const imageState = await page.$$eval('.background-image', images => images.map(image => ({
+          complete: image.complete,
+          width: image.naturalWidth,
+          height: image.naturalHeight
+        })));
+        if (!imageState.length || imageState.some(image => !image.complete || !image.width || !image.height)) {
+          throw new Error('Embedded slideshow images did not load in Chromium');
+        }
+      } finally {
+        await browser.close();
+      }
+
       const videoPath = path.join(dir, 'out.mp4');
       await generator.renderSlidesToVideo(stills, 6, videoPath);
 
