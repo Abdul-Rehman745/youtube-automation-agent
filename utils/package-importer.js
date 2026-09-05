@@ -266,20 +266,31 @@ async function runImport(db, agents, logger) {
   const results = { imported: [], rejected: [] };
 
   for (const dir of folders) {
+    // Atomic claim: rename wins for exactly one concurrent caller. If a second
+    // runImport (e.g. the cron and a manual dashboard click landing at the same
+    // moment) reaches this folder after, done.flag is already gone and it skips.
+    const claimed = path.join(dir, 'done.processing');
+    try {
+      await fs.rename(path.join(dir, 'done.flag'), claimed);
+    } catch {
+      continue; // already claimed by another run, or no longer ready
+    }
+
     const validation = await validatePackage(dir);
     if (!validation.valid) {
       logger.error(`Rejecting incomplete package at ${dir}: ${validation.reason}`);
-      await fs.rename(path.join(dir, 'done.flag'), path.join(dir, 'done.invalid')).catch(() => {});
+      await fs.rename(claimed, path.join(dir, 'done.invalid')).catch(() => {});
       results.rejected.push({ dir, reason: validation.reason });
       continue;
     }
 
     try {
       const outcome = await importPackage(db, agents, logger, validation);
-      await fs.rename(path.join(dir, 'done.flag'), path.join(dir, 'done.imported')).catch(() => {});
+      await fs.rename(claimed, path.join(dir, 'done.imported')).catch(() => {});
       results.imported.push({ dir, ...outcome });
     } catch (error) {
       logger.error(`Failed to import package at ${dir}:`, error);
+      await fs.rename(claimed, path.join(dir, 'done.invalid')).catch(() => {});
       results.rejected.push({ dir, reason: error.message });
     }
   }
