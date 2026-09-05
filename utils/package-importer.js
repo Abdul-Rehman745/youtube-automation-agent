@@ -1,7 +1,7 @@
 const fs = require('fs').promises;
 const path = require('path');
 const sharp = require('sharp');
-const { getMediaDuration } = require('./ffmpeg');
+const { getMediaDuration, runFFmpeg } = require('./ffmpeg');
 
 function baseDir() {
   return process.env.DRIVE_IMAGES_PATH || null;
@@ -51,6 +51,55 @@ async function findReadyFolders() {
     }
   }
   return ready.sort((a, b) => a.mtime - b.mtime).map(r => r.dir);
+}
+
+// When the external worker supplies only frames (Lumen owns script/audio/
+// metadata), build production/final-video.mp4 ourselves from assets/frame_*.png
+// + audio/voiceover.mp3, timed per manifest.frames[].timestamp. No-op if a
+// final-video.mp4 already exists (the older "other AI builds everything" mode).
+async function assembleFromFrames(dir) {
+  const finalPath = path.join(dir, 'production', 'final-video.mp4');
+  try {
+    await fs.access(finalPath);
+    return; // already assembled (or supplied ready-made)
+  } catch {
+    // needs assembling
+  }
+
+  const manifest = JSON.parse(await fs.readFile(path.join(dir, 'production', 'manifest.json'), 'utf8'));
+  const audioPath = path.join(dir, 'audio', 'voiceover.mp3');
+  const totalDuration = (await getMediaDuration(audioPath)) || manifest.targetDurationSeconds || 180;
+
+  const frames = (manifest.frames || []).slice().sort((a, b) => a.timestamp - b.timestamp);
+  const listPath = path.join(dir, 'production', 'frames_list.txt');
+  const lines = [];
+  for (let i = 0; i < frames.length; i++) {
+    const framePath = path.join(dir, 'assets', frames[i].file);
+    try {
+      await fs.access(framePath);
+    } catch {
+      continue; // missing frame — skip it rather than fail the whole video
+    }
+    const next = frames[i + 1] ? frames[i + 1].timestamp : totalDuration;
+    const duration = Math.max(0.1, next - frames[i].timestamp);
+    lines.push(`file '${framePath.replace(/'/g, "'\\''")}'`, `duration ${duration.toFixed(3)}`);
+  }
+  if (!lines.length) throw new Error('No usable frame images found to assemble');
+  lines.push(lines[lines.length - 2]); // repeat last file (required by concat demuxer to honor its duration)
+  await fs.writeFile(listPath, lines.join('\n'));
+
+  const visualPath = path.join(dir, 'production', 'visual.mp4');
+  await runFFmpeg([
+    '-y', '-f', 'concat', '-safe', '0', '-i', listPath,
+    '-vf', 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=30,format=yuv420p',
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', visualPath
+  ]);
+  await runFFmpeg([
+    '-y', '-i', visualPath, '-i', audioPath,
+    '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-shortest', finalPath
+  ]);
+  await fs.unlink(listPath).catch(() => {});
+  await fs.unlink(visualPath).catch(() => {});
 }
 
 async function validatePackage(dir) {
@@ -274,6 +323,15 @@ async function runImport(db, agents, logger) {
       await fs.rename(path.join(dir, 'done.flag'), claimed);
     } catch {
       continue; // already claimed by another run, or no longer ready
+    }
+
+    try {
+      await assembleFromFrames(dir);
+    } catch (error) {
+      logger.error(`Frame assembly failed at ${dir}: ${error.message}`);
+      await fs.rename(claimed, path.join(dir, 'done.invalid')).catch(() => {});
+      results.rejected.push({ dir, reason: `assembly failed: ${error.message}` });
+      continue;
     }
 
     const validation = await validatePackage(dir);

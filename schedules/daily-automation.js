@@ -4,6 +4,7 @@ const fs = require('fs').promises;
 const { Logger } = require('../utils/logger');
 const imageSupply = require('../utils/image-supply');
 const packageImporter = require('../utils/package-importer');
+const nextProduction = require('../utils/next-production');
 
 class DailyAutomation {
   constructor(agents, database, options = {}) {
@@ -204,12 +205,24 @@ class DailyAutomation {
       if (results.imported.length || results.rejected.length) {
         await this.logAutomationEvent('package_import', results.rejected.length ? 'warning' : 'success', results);
       }
+      if (results.imported.length) {
+        // A video just went out — immediately prepare tomorrow's script/audio/
+        // metadata so the external image worker has the full day to draw frames,
+        // instead of a tight few-hour window.
+        await nextProduction.prepareNextProduction(this.agents, this.db, this.logger).catch(error => {
+          this.logger.error('Failed to prepare next production:', error);
+        });
+      }
       return results;
     } catch (error) {
       this.logger.error('Package import failed:', error);
       await this.logAutomationEvent('package_import', 'error', { error: error.message });
       return { imported: [], rejected: [] };
     }
+  }
+
+  async prepareNextProduction() {
+    return nextProduction.prepareNextProduction(this.agents, this.db, this.logger);
   }
 
   async runDailyContentGeneration() {

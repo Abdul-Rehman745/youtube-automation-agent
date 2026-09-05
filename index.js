@@ -568,6 +568,16 @@ class YouTubeAutomationAgent {
       }
     });
 
+    this.app.post('/api/scheduler/prepare-next', protect, async (_req, res) => {
+      try {
+        if (!this.scheduler) return res.status(503).json({ success: false, error: 'Scheduler is not initialized' });
+        const dir = await this.scheduler.prepareNextProduction();
+        return res.json({ success: true, dir });
+      } catch (error) {
+        return res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
     this.app.post('/api/scheduler/import-packages', protect, async (_req, res) => {
       try {
         if (!this.scheduler) return res.status(503).json({ success: false, error: 'Scheduler is not initialized' });
