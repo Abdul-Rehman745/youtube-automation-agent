@@ -17,27 +17,46 @@ function deriveTagsFromTitle(title = '') {
 }
 
 // One Gemini call asking for all 100 timed, visually-distinct frame prompts.
+// Cinematic-scene, no-visible-text house style. The "never include visible
+// text" instruction goes to the model, but is ALSO enforced by appending this
+// suffix to every returned prompt in code — 100 items is too many to trust an
+// LLM to honor a rule on every single one without a backstop.
+const CINEMATIC_STYLE = "High-quality professional stylized 3D children's animated-feature-film scene, adorable original characters, detailed soft fur or feathers, large expressive eyes, rounded friendly proportions, polished clothing materials, cinematic global illumination, soft natural shadows, subtle depth of field, vibrant pleasant colors, rich but readable environment, professional 16:9 composition, premium animated-film rendering";
+const NO_TEXT_SUFFIX = ', no visible text, no letters or numbers, no captions, no subtitles, no title cards, no speech bubbles, no banners, no labels, no charts, no infographics, no watermark, no logo';
+
 // Falls back to a simple interpolation over existing script sections if the
 // model output doesn't parse cleanly — the pipeline should never hard-fail
 // here just because an LLM response was malformed.
 async function buildFramePrompts(aiTextService, script, style, totalDuration) {
   if (aiTextService.isAvailable()) {
-    const prompt = `You are planning the visuals for a ${Math.round(totalDuration)}-second animated children's video titled "${script.title}".
-Return ONLY a JSON array of exactly ${FRAME_COUNT} objects, evenly spaced across the video, each:
-{"timestamp": number (seconds, 0 to ${Math.round(totalDuration)}), "prompt": "short visual scene description, ${style}"}
-Keep character appearance and setting consistent across frames. Show visual progression matching this story outline:
-${JSON.stringify((script.mainContent?.sections || []).map(s => s.title || s.content).slice(0, 20))}
+    const prompt = `You are a cinematographer planning ${FRAME_COUNT} story frames for an animated children's video titled "${script.title}".
+
+VISUAL STYLE for every frame: ${CINEMATIC_STYLE}. ${style}
+
+Story outline, in order: ${JSON.stringify((script.mainContent?.sections || []).map(s => s.title || s.content).slice(0, 20))}
+
+For each of the ${FRAME_COUNT} frames, write ONE prompt (2-4 sentences) covering:
+- visible character action, expressions, and body language
+- camera angle and framing (wide shot, medium shot, close-up, low angle, high angle, or over-the-shoulder)
+- story location with foreground, middle ground, and background detail
+- lighting and mood
+- continuity: same character names, colors, proportions, and clothing as neighboring frames
+
+STRICT RULE: never request any visible text, letters, numbers, captions, subtitles, title cards, speech bubbles, banners, labels, charts, or infographics in a frame. If the story implies written or numbered information, describe it as character action instead (e.g. a character gesturing or reacting), never as on-screen text.
+
+Return ONLY a JSON array of exactly ${FRAME_COUNT} objects, evenly spaced across ${Math.round(totalDuration)} seconds:
+{"timestamp": number, "prompt": "..."}
 Return only the JSON array, no other text.`;
 
     try {
-      const response = await aiTextService.generateText(prompt, { maxTokens: 6000, temperature: 0.7 });
+      const response = await aiTextService.generateText(prompt, { maxTokens: 12000, temperature: 0.7 });
       const match = response.match(/\[[\s\S]*\]/);
       const parsed = JSON.parse(match[0]);
       if (Array.isArray(parsed) && parsed.length >= FRAME_COUNT * 0.9) {
         return parsed.slice(0, FRAME_COUNT).map((f, i) => ({
           file: `frame_${String(i + 1).padStart(4, '0')}.png`,
           timestamp: Number(f.timestamp) || (i / FRAME_COUNT) * totalDuration,
-          prompt: String(f.prompt || script.title).slice(0, 500)
+          prompt: `${String(f.prompt || script.title).slice(0, 600)}${NO_TEXT_SUFFIX}`
         }));
       }
     } catch {
@@ -50,7 +69,7 @@ Return only the JSON array, no other text.`;
   return Array.from({ length: FRAME_COUNT }, (_, i) => ({
     file: `frame_${String(i + 1).padStart(4, '0')}.png`,
     timestamp: (i / FRAME_COUNT) * totalDuration,
-    prompt: `${base[i % base.length]}, ${style}`
+    prompt: `${base[i % base.length]}, ${style}${NO_TEXT_SUFFIX}`
   }));
 }
 
@@ -104,7 +123,7 @@ async function prepareNextProduction(agents, db, logger) {
     avoid: profile.bannedTopics || [],
     callToAction: profile.call_to_action || '',
     frames,
-    thumbnailPrompt: `${script.title}, YouTube thumbnail, bold text-safe composition, ${style}`
+    thumbnailPrompt: `${CINEMATIC_STYLE}. ${style}. Cinematic story background featuring the main character(s). Overlay the exact text "${script.title}" as the ONLY text in the image — do not shorten, rewrite, or invent the title. Large, bold, highly readable typography inside safe margins, strong contrast with a clean outline or shadow, not covering any character's face. No other text, captions, labels, channel name, or logo.`
   }, null, 2));
 
   await fs.writeFile(path.join(dir, 'production', 'youtube-metadata.json'), JSON.stringify({
