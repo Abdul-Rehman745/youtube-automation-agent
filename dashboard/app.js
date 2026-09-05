@@ -1594,6 +1594,13 @@ document.addEventListener('change', event => {
 $('#generate-button').addEventListener('click', () => $('#generate-dialog').showModal());
 $('#add-idea-button').addEventListener('click', () => $('#idea-dialog').showModal());
 $('#refresh-button').addEventListener('click', () => refreshDashboard());
+$('#check-packages-button').addEventListener('click', async () => {
+  const result = await mutate('/api/scheduler/import-packages', 'POST', {}, 'Checked for ready videos.').catch(() => null);
+  const imported = result?.result?.imported?.length || 0;
+  if (imported > 0) {
+    await mutate('/api/scheduler/process-publish-queue', 'POST', {}, `Published ${imported} video(s).`).catch(() => {});
+  }
+});
 $('#pipeline-filter').addEventListener('change', () => renderPipeline(ui.state?.pipeline || []));
 
 $('#experiment-create-form').addEventListener('submit', async event => {

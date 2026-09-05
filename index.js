@@ -548,6 +548,36 @@ class YouTubeAutomationAgent {
       }
     });
 
+    this.app.post('/api/scheduler/plan-images', protect, async (req, res) => {
+      try {
+        if (!this.scheduler) return res.status(503).json({ success: false, error: 'Scheduler is not initialized' });
+        await this.scheduler.runImagePromptPlanning({ force: req.query.force === 'true' });
+        return res.json({ success: true });
+      } catch (error) {
+        return res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    this.app.post('/api/scheduler/process-publish-queue', protect, async (_req, res) => {
+      try {
+        if (!this.scheduler) return res.status(503).json({ success: false, error: 'Scheduler is not initialized' });
+        await this.scheduler.processPublishQueue();
+        return res.json({ success: true });
+      } catch (error) {
+        return res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    this.app.post('/api/scheduler/import-packages', protect, async (_req, res) => {
+      try {
+        if (!this.scheduler) return res.status(503).json({ success: false, error: 'Scheduler is not initialized' });
+        const result = await this.scheduler.runPackageImport();
+        return res.json({ success: true, result });
+      } catch (error) {
+        return res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
     this.app.get('/api/readiness', async (_req, res) => {
       if (!this.readiness) return res.status(503).json({ error: 'Readiness service is not initialized' });
       return res.json(await this.readiness.getSummary());
@@ -1408,13 +1438,36 @@ class YouTubeAutomationAgent {
 
   async generateContent(topic = null, style = null, length = 'medium', options = {}) {
     this.logger.info('Starting content generation pipeline...');
-    const { jobId = null, strategyContext = {} } = options;
+    const { jobId = null, strategyContext: rawStrategyContext = {} } = options;
+    const strategyContext = rawStrategyContext || {};
     const profile = await this.db.getChannelProfile() || {};
     const lengthLabels = { short: '2-4 minutes', medium: '8-12 minutes', long: '15-20 minutes' };
 
+    // A same-day planning run (schedules/daily-automation.js, ~2 hours earlier) may have
+    // already picked a topic, written a script, and sent scene prompts to an external
+    // image source. Reuse that exact strategy/script here so the images being generated
+    // against those prompts still match what this video actually becomes.
+    let prebuiltStrategy = options.prebuiltStrategy || null;
+    let prebuiltScript = options.prebuiltScript || null;
+    const pendingPlanPath = path.join(__dirname, 'data', 'pending-plan.json');
+    if (!topic && !prebuiltStrategy) {
+      try {
+        const raw = await fs.readFile(pendingPlanPath, 'utf8');
+        const plan = JSON.parse(raw);
+        if (plan.date === new Date().toISOString().slice(0, 10)) {
+          prebuiltStrategy = plan.strategy;
+          prebuiltScript = plan.script;
+          this.logger.info(`Reusing today's planned topic: ${plan.strategy?.topic}`);
+        }
+      } catch {
+        // No pending plan (Drive image-supply flow not configured, or planning didn't run) — normal path.
+      }
+      await fs.unlink(pendingPlanPath).catch(() => {});
+    }
+
     // Step 1: Strategy
     const strategy = await this.runGenerationStage(jobId, 'strategy', 10, async () => {
-      const generated = await this.agents.strategy.generateContentStrategy(topic);
+      const generated = prebuiltStrategy || await this.agents.strategy.generateContentStrategy(topic);
       const contentStyles = new Set(['tutorial', 'explainer', 'list', 'review', 'story']);
       const requestedStyle = style || profile.default_style || null;
       if (requestedStyle && contentStyles.has(requestedStyle.toLowerCase())) {
@@ -1444,7 +1497,7 @@ class YouTubeAutomationAgent {
       jobId,
       'script',
       25,
-      () => this.agents.scriptWriter.generateScript(strategy)
+      () => prebuiltScript || this.agents.scriptWriter.generateScript(strategy)
     );
     this.logger.info(`Script generated: ${script.title}`);
 

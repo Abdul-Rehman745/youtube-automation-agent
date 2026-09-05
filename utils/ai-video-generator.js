@@ -5,7 +5,8 @@ const path = require('path');
 const axios = require('axios');
 const sharp = require('sharp');
 const { Logger } = require('./logger');
-const { runFFmpeg, checkFFmpeg, ffmpegInstallHint } = require('./ffmpeg');
+const { runFFmpeg, checkFFmpeg, ffmpegInstallHint, getMediaDuration } = require('./ffmpeg');
+const imageSupply = require('./image-supply');
 const { MediaGenerationService } = require('./media-generation-service');
 
 class AIVideoGenerator {
@@ -195,6 +196,12 @@ class AIVideoGenerator {
     this.logger.info(`Generating ${count} visual assets with style: ${style}`);
 
     try {
+      const supplied = await imageSupply.takeNextScene();
+      if (supplied) {
+        this.logger.info(`Using operator-supplied image: ${supplied}`);
+        return [supplied];
+      }
+
       if (!this.openai && !this.gemini) {
         return await this.simulateVisualAssets(prompt, style, count);
       }
@@ -507,7 +514,8 @@ class AIVideoGenerator {
       }
 
       const videoPath = outputPath.replace('.mp4', '_visual.mp4');
-      const duration = this.calculateScriptDuration(script);
+      const audioDuration = await getMediaDuration(audioPath);
+      const duration = audioDuration || this.calculateScriptDuration(script);
       await this.renderSlidesToVideo(stills, duration, videoPath);
 
       // Add audio
@@ -886,6 +894,17 @@ class AIVideoGenerator {
     this.logger.info('Generating custom thumbnail...');
 
     try {
+      const supplied = await imageSupply.takeThumbnail();
+      if (supplied) {
+        this.logger.info(`Using operator-supplied thumbnail: ${supplied}`);
+        const metadata = await sharp(supplied).metadata();
+        return {
+          path: supplied,
+          dimensions: { width: metadata.width, height: metadata.height },
+          fileSize: await this.getFileSize(supplied)
+        };
+      }
+
       if (!this.openai && !this.gemini) {
         return await this.simulateThumbnailGeneration(script, style);
       }

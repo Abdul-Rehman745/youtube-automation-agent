@@ -1,5 +1,9 @@
 const cron = require('node-cron');
+const path = require('path');
+const fs = require('fs').promises;
 const { Logger } = require('../utils/logger');
+const imageSupply = require('../utils/image-supply');
+const packageImporter = require('../utils/package-importer');
 
 class DailyAutomation {
   constructor(agents, database, options = {}) {
@@ -28,8 +32,33 @@ class DailyAutomation {
   }
 
   async setupScheduledTasks() {
+    // Image-prompt planning at 3:30 AM — picks tomorrow's topic and script early,
+    // and sends scene/thumbnail prompts to an external image source (e.g. a
+    // Drive-synced folder) so images are ready before production runs at 6:00 AM.
+    // No-ops if DRIVE_IMAGES_PATH isn't configured.
+    this.scheduledTasks.set('image-prompt-planning',
+      cron.schedule('30 3 * * *', async () => {
+        if (this.isEnabled) {
+          await this.runImagePromptPlanning();
+        }
+      }, { scheduled: false })
+    );
+
+    // Complete-package import + auto-publish at 08:00 and 20:00 — the external
+    // production worker's videos become ready by 07:45/19:45; this picks them up.
+    this.scheduledTasks.set('package-import-morning',
+      cron.schedule('0 8 * * *', async () => {
+        if (this.isEnabled) await this.runPackageImport();
+      }, { scheduled: false })
+    );
+    this.scheduledTasks.set('package-import-evening',
+      cron.schedule('0 20 * * *', async () => {
+        if (this.isEnabled) await this.runPackageImport();
+      }, { scheduled: false })
+    );
+
     // Daily content generation at 6:00 AM
-    this.scheduledTasks.set('daily-content-generation', 
+    this.scheduledTasks.set('daily-content-generation',
       cron.schedule('0 6 * * *', async () => {
         if (this.isEnabled) {
           await this.runDailyContentGeneration();
@@ -105,6 +134,82 @@ class DailyAutomation {
       task.start();
       this.logger.info(`Started scheduled task: ${name}`);
     });
+  }
+
+  async runImagePromptPlanning({ force = false } = {}) {
+    if (!process.env.DRIVE_IMAGES_PATH) return; // feature not configured — skip silently
+
+    try {
+      const shouldGenerate = force || await this.shouldGenerateContentToday();
+      if (!shouldGenerate) {
+        this.logger.info('Skipping image-prompt planning - sufficient content in pipeline');
+        return;
+      }
+
+      this.logger.info('Starting image-prompt planning...');
+      const strategy = await this.agents.strategy.generateContentStrategy();
+      const script = await this.agents.scriptWriter.generateScript(strategy);
+      const profile = (this.db.getChannelProfile && await this.db.getChannelProfile()) || {};
+
+      const scenePrompts = this.buildScenePrompts(script, profile);
+      const thumbnailPrompt = this.buildThumbnailPrompt(script, profile);
+
+      const dir = await imageSupply.writePrompts(scenePrompts, thumbnailPrompt, {
+        aspectRatio: '16:9',
+        resolution: '1920x1080',
+        style: profile.visual_style || '',
+        audience: profile.target_audience || '',
+        avoid: profile.bannedTopics || []
+      });
+
+      const pendingPlanPath = path.join(__dirname, '..', 'data', 'pending-plan.json');
+      await fs.writeFile(pendingPlanPath, JSON.stringify({
+        date: new Date().toISOString().slice(0, 10),
+        strategy,
+        script
+      }, null, 2));
+
+      this.logger.success(`Image-prompt planning complete: ${script.title} -> ${dir}`);
+      await this.logAutomationEvent('image_prompt_planning', 'success', { dir, title: script.title });
+    } catch (error) {
+      this.logger.error('Image-prompt planning failed:', error);
+      await this.logAutomationEvent('image_prompt_planning', 'error', { error: error.message });
+    }
+  }
+
+  buildScenePrompts(script, profile = {}) {
+    const style = profile.visual_style || 'bright, colorful, friendly';
+    const prompts = [`${script.title}, ${style}, title card`];
+
+    if (script.mainContent && script.mainContent.sections) {
+      script.mainContent.sections.forEach(section => {
+        if (section.title) prompts.push(`${section.title}, ${style}`);
+      });
+    }
+
+    while (prompts.length < 3) prompts.push(`${script.title}, ${style}, supporting scene`);
+    return prompts.slice(0, 5);
+  }
+
+  buildThumbnailPrompt(script, profile = {}) {
+    const style = profile.visual_style || 'bright, colorful, friendly';
+    return `${script.title}, YouTube thumbnail, bold text-safe composition, ${style}`;
+  }
+
+  async runPackageImport() {
+    if (!process.env.DRIVE_IMAGES_PATH) return; // feature not configured — skip silently
+
+    try {
+      const results = await packageImporter.runImport(this.db, this.agents, this.logger);
+      if (results.imported.length || results.rejected.length) {
+        await this.logAutomationEvent('package_import', results.rejected.length ? 'warning' : 'success', results);
+      }
+      return results;
+    } catch (error) {
+      this.logger.error('Package import failed:', error);
+      await this.logAutomationEvent('package_import', 'error', { error: error.message });
+      return { imported: [], rejected: [] };
+    }
   }
 
   async runDailyContentGeneration() {

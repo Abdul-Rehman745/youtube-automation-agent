@@ -87,6 +87,9 @@ data/captions/
 data/scripts/
 data/videos/
 data/thumbnails/
+data/thumbnail-templates/
+data/production/
+data/pending-plan.json
 
 # Claude worktrees
 .claude/worktrees/
