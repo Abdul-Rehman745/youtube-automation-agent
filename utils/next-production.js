@@ -73,13 +73,13 @@ Return only the JSON array, no other text.`;
   }));
 }
 
-async function prepareNextProduction(agents, db, logger) {
+async function prepareNextProduction(agents, db, logger, daysAhead = 1) {
   const base = process.env.DRIVE_IMAGES_PATH;
   if (!base) return null;
 
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const dir = path.join(base, 'data', folderName(tomorrow));
+  const target = new Date();
+  target.setDate(target.getDate() + daysAhead);
+  const dir = path.join(base, 'data', folderName(target));
 
   try {
     await fs.access(path.join(dir, 'production', 'manifest.json'));

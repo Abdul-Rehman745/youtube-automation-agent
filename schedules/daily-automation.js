@@ -205,14 +205,18 @@ class DailyAutomation {
       if (results.imported.length || results.rejected.length) {
         await this.logAutomationEvent('package_import', results.rejected.length ? 'warning' : 'success', results);
       }
-      if (results.imported.length) {
-        // A video just went out — immediately prepare tomorrow's script/audio/
-        // metadata so the external image worker has the full day to draw frames,
-        // instead of a tight few-hour window.
-        await nextProduction.prepareNextProduction(this.agents, this.db, this.logger).catch(error => {
-          this.logger.error('Failed to prepare next production:', error);
-        });
-      }
+      // Always ensure today's AND tomorrow's folders exist (both no-op if already
+      // prepared) regardless of whether today's video actually published. This is
+      // the self-healing part: previously, prep only ran after a successful
+      // publish, so one missed/late video from the external worker permanently
+      // stalled every future day's folder too, since nothing would ever trigger
+      // the next one.
+      await nextProduction.prepareNextProduction(this.agents, this.db, this.logger, 0).catch(error => {
+        this.logger.error('Failed to prepare today\'s production:', error);
+      });
+      await nextProduction.prepareNextProduction(this.agents, this.db, this.logger, 1).catch(error => {
+        this.logger.error('Failed to prepare next production:', error);
+      });
       return results;
     } catch (error) {
       this.logger.error('Package import failed:', error);
